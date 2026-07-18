@@ -10,13 +10,13 @@
 //   - Maneja eventos (click) con hit-testing sobre rectángulos de widgets
 //   - Ejecuta callbacks Forja mediante evaluador tree-walking simplificado
 
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use forja::ast::{Declaracion, Expresion, Operador, OperadorUnario};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use forja::ast::{Declaracion, Expresion, Operador, OperadorUnario};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 // ═══════════════════════════════════════════════════════════════════
 // TIPOS DE VALOR
@@ -53,9 +53,7 @@ impl ValorGUI {
                     f.to_string()
                 }
             }
-            ValorGUI::Booleano(b) => {
-                if *b { "verdadero" } else { "falso" }.to_string()
-            }
+            ValorGUI::Booleano(b) => if *b { "verdadero" } else { "falso" }.to_string(),
             ValorGUI::Nulo => "nulo".to_string(),
         }
     }
@@ -64,11 +62,9 @@ impl ValorGUI {
         match self {
             ValorGUI::Texto(t) => serde_json::Value::String(t.clone()),
             ValorGUI::Entero(n) => serde_json::Value::Number((*n).into()),
-            ValorGUI::Decimal(f) => {
-                serde_json::Number::from_f64(*f)
-                    .map(serde_json::Value::Number)
-                    .unwrap_or(serde_json::Value::Null)
-            }
+            ValorGUI::Decimal(f) => serde_json::Number::from_f64(*f)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
             ValorGUI::Booleano(b) => serde_json::Value::Bool(*b),
             ValorGUI::Nulo => serde_json::Value::Null,
         }
@@ -77,12 +73,11 @@ impl ValorGUI {
     fn from_serde(val: &serde_json::Value) -> Self {
         match val {
             serde_json::Value::String(s) => ValorGUI::Texto(s.clone()),
-            serde_json::Value::Number(n) => {
-                n.as_i64()
-                    .map(ValorGUI::Entero)
-                    .or_else(|| n.as_f64().map(ValorGUI::Decimal))
-                    .unwrap_or(ValorGUI::Nulo)
-            }
+            serde_json::Value::Number(n) => n
+                .as_i64()
+                .map(ValorGUI::Entero)
+                .or_else(|| n.as_f64().map(ValorGUI::Decimal))
+                .unwrap_or(ValorGUI::Nulo),
             serde_json::Value::Bool(b) => ValorGUI::Booleano(*b),
             _ => ValorGUI::Nulo,
         }
@@ -104,13 +99,29 @@ impl ValorGUI {
 
 #[derive(Debug, Clone)]
 pub enum Layout {
-    Column { children: Vec<Layout>, gap: f64 },
-    Row { children: Vec<Layout>, gap: f64 },
+    Column {
+        children: Vec<Layout>,
+        gap: f64,
+    },
+    Row {
+        children: Vec<Layout>,
+        gap: f64,
+    },
     ZStack(Vec<Layout>),
-    Label { texto: String },
-    VariableLabel { variable: String },
-    Button { texto: String, callback: String },
-    TextInput { variable: String, placeholder: String },
+    Label {
+        texto: String,
+    },
+    VariableLabel {
+        variable: String,
+    },
+    Button {
+        texto: String,
+        callback: String,
+    },
+    TextInput {
+        variable: String,
+        placeholder: String,
+    },
     Title(String),
     Spacer(f64),
     /// Placeholder para layouts no implementados en Canvas
@@ -258,7 +269,15 @@ fn renderizar_layout(
             let mut cy: f64 = y + gap;
             let mut max_ancho: f64 = 0.0;
             for child in children {
-                let usado = renderizar_layout(ctx, child, x + gap, cy, ancho_disponible - gap * 2.0, hit_areas, store);
+                let usado = renderizar_layout(
+                    ctx,
+                    child,
+                    x + gap,
+                    cy,
+                    ancho_disponible - gap * 2.0,
+                    hit_areas,
+                    store,
+                );
                 let alto: f64 = usado.1;
                 max_ancho = max_ancho.max(usado.0 + gap * 2.0);
                 cy += alto + gap;
@@ -277,7 +296,8 @@ fn renderizar_layout(
             }
             for (i, child) in children.iter().enumerate() {
                 let ancho_hijo = medidas[i].0;
-                let usado = renderizar_layout(ctx, child, cx, y + gap, ancho_hijo, hit_areas, store);
+                let usado =
+                    renderizar_layout(ctx, child, cx, y + gap, ancho_hijo, hit_areas, store);
                 max_alto = max_alto.max(usado.1 + gap * 2.0);
                 cx += ancho_hijo + gap;
             }
@@ -295,24 +315,40 @@ fn renderizar_layout(
             (max_ancho, max_alto)
         }
 
-        Layout::Label { texto } => {
-            renderizar_label(ctx, texto, x, y, ancho_disponible)
-        }
+        Layout::Label { texto } => renderizar_label(ctx, texto, x, y, ancho_disponible),
 
         Layout::VariableLabel { variable } => {
-            let texto = store.get(variable)
+            let texto = store
+                .get(variable)
                 .map(|v| ValorGUI::from_serde(&v).to_display())
                 .unwrap_or_else(|| format!("{{{{{}}}}}", variable));
             renderizar_label(ctx, &texto, x, y, ancho_disponible)
         }
 
-        Layout::Button { texto, .. } => {
-            renderizar_boton(ctx, texto, x, y, ancho_disponible, hit_areas, layout.clone())
-        }
+        Layout::Button { texto, .. } => renderizar_boton(
+            ctx,
+            texto,
+            x,
+            y,
+            ancho_disponible,
+            hit_areas,
+            layout.clone(),
+        ),
 
-        Layout::TextInput { variable, placeholder } => {
-            renderizar_text_input(ctx, variable, placeholder, x, y, ancho_disponible, store, hit_areas, layout.clone())
-        }
+        Layout::TextInput {
+            variable,
+            placeholder,
+        } => renderizar_text_input(
+            ctx,
+            variable,
+            placeholder,
+            x,
+            y,
+            ancho_disponible,
+            store,
+            hit_areas,
+            layout.clone(),
+        ),
 
         Layout::Title(texto) => {
             ctx.set_font("bold 20px sans-serif");
@@ -321,14 +357,13 @@ fn renderizar_layout(
             (ancho_disponible.max(100.0), 32.0)
         }
 
-        Layout::Spacer(tam) => {
-            (ancho_disponible, *tam)
-        }
+        Layout::Spacer(tam) => (ancho_disponible, *tam),
 
         Layout::Unimplemented(desc) => {
             ctx.set_fill_style_str(COLOR_ERROR);
             ctx.set_font("12px sans-serif");
-            ctx.fill_text(&format!("⚠ {}", desc), x + 4.0, y + 16.0).ok();
+            ctx.fill_text(&format!("⚠ {}", desc), x + 4.0, y + 16.0)
+                .ok();
             (ancho_disponible, 24.0)
         }
     }
@@ -380,7 +415,10 @@ fn renderizar_boton(
 
     // Registrar área de hit-testing
     hit_areas.push(WidgetHitArea {
-        x, y, ancho, alto,
+        x,
+        y,
+        ancho,
+        alto,
         layout,
     });
 
@@ -403,7 +441,8 @@ fn renderizar_text_input(
     let radio_esq = 4.0;
 
     // Obtener valor actual
-    let valor_actual = store.get(variable)
+    let valor_actual = store
+        .get(variable)
         .map(|v| ValorGUI::from_serde(&v).to_display())
         .unwrap_or_default();
 
@@ -433,7 +472,10 @@ fn renderizar_text_input(
 
     // Registrar área de hit-testing
     hit_areas.push(WidgetHitArea {
-        x, y, ancho, alto,
+        x,
+        y,
+        ancho,
+        alto,
         layout,
     });
 
@@ -441,25 +483,46 @@ fn renderizar_text_input(
 }
 
 /// Dibuja un rectángulo redondeado usando path 2D
-fn redondear_rect(
-    ctx: &CanvasRenderingContext2d,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    r: f64,
-) {
+fn redondear_rect(ctx: &CanvasRenderingContext2d, x: f64, y: f64, w: f64, h: f64, r: f64) {
     let radio = r.min(w / 2.0).min(h / 2.0);
     ctx.begin_path();
     ctx.move_to(x + radio, y);
     ctx.line_to(x + w - radio, y);
-    ctx.arc(x + w - radio, y + radio, radio, -std::f64::consts::FRAC_PI_2, 0.0).ok();
+    ctx.arc(
+        x + w - radio,
+        y + radio,
+        radio,
+        -std::f64::consts::FRAC_PI_2,
+        0.0,
+    )
+    .ok();
     ctx.line_to(x + w, y + h - radio);
-    ctx.arc(x + w - radio, y + h - radio, radio, 0.0, std::f64::consts::FRAC_PI_2).ok();
+    ctx.arc(
+        x + w - radio,
+        y + h - radio,
+        radio,
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+    )
+    .ok();
     ctx.line_to(x + radio, y + h);
-    ctx.arc(x + radio, y + h - radio, radio, std::f64::consts::FRAC_PI_2, std::f64::consts::PI).ok();
+    ctx.arc(
+        x + radio,
+        y + h - radio,
+        radio,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    )
+    .ok();
     ctx.line_to(x, y + radio);
-    ctx.arc(x + radio, y + radio, radio, std::f64::consts::PI, -std::f64::consts::FRAC_PI_2).ok();
+    ctx.arc(
+        x + radio,
+        y + radio,
+        radio,
+        std::f64::consts::PI,
+        -std::f64::consts::FRAC_PI_2,
+    )
+    .ok();
     ctx.close_path();
 }
 
@@ -470,9 +533,7 @@ fn estimar_ancho(layout: &Layout, _default_ancho: f64) -> f64 {
             (texto.len() as f64 * 8.0 + 16.0).min(250.0)
         }
         Layout::VariableLabel { .. } => 100.0,
-        Layout::Button { texto, .. } => {
-            (texto.len() as f64 * 9.0 + 32.0).max(80.0).min(200.0)
-        }
+        Layout::Button { texto, .. } => (texto.len() as f64 * 9.0 + 32.0).max(80.0).min(200.0),
         Layout::TextInput { .. } => 150.0,
         Layout::Spacer(tam) => *tam,
         Layout::Column { .. } => _default_ancho,
@@ -485,7 +546,6 @@ fn estimar_ancho(layout: &Layout, _default_ancho: f64) -> f64 {
 // ═══════════════════════════════════════════════════════════════════
 // AST → LAYOUT (conversión simplificada)
 // ═══════════════════════════════════════════════════════════════════
-
 
 /// Extrae el layout del AST buscando la función `main` y convirtiendo
 /// las llamadas a funciones de UI al Layout correspondiente.
@@ -541,11 +601,15 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                 "escribir" | "etiqueta" | "label" | "text" | "Label" => {
                     if let Some(arg) = argumentos.first() {
                         match arg {
-                            Expresion::Identificador { nombre: v, .. } =>
-                                Some(Layout::VariableLabel { variable: v.clone() }),
-                            Expresion::LiteralTexto(s) =>
-                                Some(Layout::Label { texto: s.clone() }),
-                            _ => Some(Layout::Label { texto: format!("{:?}", arg) }),
+                            Expresion::Identificador { nombre: v, .. } => {
+                                Some(Layout::VariableLabel {
+                                    variable: v.clone(),
+                                })
+                            }
+                            Expresion::LiteralTexto(s) => Some(Layout::Label { texto: s.clone() }),
+                            _ => Some(Layout::Label {
+                                texto: format!("{:?}", arg),
+                            }),
                         }
                     } else {
                         Some(Layout::Spacer(0.0))
@@ -553,21 +617,25 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                 }
 
                 "etiqueta_titulo" | "titulo" | "title" | "Title" => {
-                    let texto = argumentos.first()
+                    let texto = argumentos
+                        .first()
                         .map(|a| match a {
                             Expresion::LiteralTexto(s) => s.clone(),
                             _ => String::new(),
-                        }).unwrap_or_default();
+                        })
+                        .unwrap_or_default();
                     Some(Layout::Title(texto))
                 }
 
                 "etiqueta_dinamica" | "varlabel" | "VariableLabel" => {
-                    let variable = argumentos.first()
+                    let variable = argumentos
+                        .first()
                         .map(|a| match a {
                             Expresion::Identificador { nombre: s, .. } => s.clone(),
                             Expresion::LiteralTexto(s) => s.clone(),
                             _ => String::new(),
-                        }).unwrap_or_default();
+                        })
+                        .unwrap_or_default();
                     Some(Layout::VariableLabel { variable })
                 }
 
@@ -585,50 +653,59 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
 
                 // Text Input
                 "entrada_texto" | "text_input" | "input" | "TextInput" => {
-                    let variable = argumentos.first()
+                    let variable = argumentos
+                        .first()
                         .map(|a| match a {
                             Expresion::LiteralTexto(s) => s.clone(),
                             Expresion::Identificador { nombre: s, .. } => s.clone(),
                             _ => String::new(),
-                        }).unwrap_or_default();
-                    let placeholder = argumentos.get(1)
+                        })
+                        .unwrap_or_default();
+                    let placeholder = argumentos
+                        .get(1)
                         .map(|a| match a {
                             Expresion::LiteralTexto(s) => s.clone(),
                             _ => String::new(),
-                        }).unwrap_or_default();
-                    Some(Layout::TextInput { variable, placeholder })
+                        })
+                        .unwrap_or_default();
+                    Some(Layout::TextInput {
+                        variable,
+                        placeholder,
+                    })
                 }
 
                 // Spacer
                 "espacio" | "spacer" | "Spacer" => {
-                    let tam = argumentos.first()
+                    let tam = argumentos
+                        .first()
                         .and_then(|a| match a {
                             Expresion::LiteralNumero(n) => Some(*n as f64),
                             _ => None,
-                        }).unwrap_or(10.0);
+                        })
+                        .unwrap_or(10.0);
                     Some(Layout::Spacer(tam))
                 }
 
                 // Si es una función desconocida, mostrar como unimplemented
                 _ => {
-                    let args_desc: Vec<String> = argumentos.iter()
+                    let args_desc: Vec<String> = argumentos
+                        .iter()
                         .map(|a| match a {
                             Expresion::LiteralTexto(s) => s.clone(),
                             Expresion::LiteralNumero(n) => n.to_string(),
                             _ => "?".to_string(),
-                        }).collect();
+                        })
+                        .collect();
                     Some(Layout::Unimplemented(
-                        format!("{}(", nombre) + &args_desc.join(", ") + ")"
+                        format!("{}(", nombre) + &args_desc.join(", ") + ")",
                     ))
                 }
             }
         }
-        Expresion::Identificador { nombre, .. } => {
-            Some(Layout::VariableLabel { variable: nombre.clone() })
-        }
-        Expresion::LiteralTexto(s) => {
-            Some(Layout::Label { texto: s.clone() })
-        }
+        Expresion::Identificador { nombre, .. } => Some(Layout::VariableLabel {
+            variable: nombre.clone(),
+        }),
+        Expresion::LiteralTexto(s) => Some(Layout::Label { texto: s.clone() }),
         _ => None,
     }
 }
@@ -679,10 +756,7 @@ fn buscar_funcion<'a>(
     declaraciones: &'a [Declaracion],
 ) -> Result<&'a Declaracion, String> {
     for d in declaraciones {
-        if let Declaracion::Funcion {
-            nombre: ref n, ..
-        } = d
-        {
+        if let Declaracion::Funcion { nombre: ref n, .. } = d {
             if n == nombre {
                 return Ok(d);
             }
@@ -700,7 +774,9 @@ fn ejecutar_funcion(
 ) -> Result<ValorGUI, String> {
     buscar_funcion(nombre, declaraciones).and_then(|func| {
         let (parametros, cuerpo) = match func {
-            Declaracion::Funcion { parametros, cuerpo, .. } => (parametros, cuerpo),
+            Declaracion::Funcion {
+                parametros, cuerpo, ..
+            } => (parametros, cuerpo),
             _ => return Err(format!("'{}' no es una función", nombre)),
         };
         let mut ambito = Ambito::new();
@@ -839,7 +915,9 @@ fn evaluar_declaracion(
             Ok(ValorGUI::Nulo)
         }
 
-        Declaracion::Cuando { condicion, cuerpo, .. } => {
+        Declaracion::Cuando {
+            condicion, cuerpo, ..
+        } => {
             let cond_val = evaluar_expresion(condicion, ambito, store, declaraciones)?;
             if cond_val.es_verdadero() {
                 evaluar_bloque(cuerpo, ambito, store, declaraciones)
@@ -886,13 +964,20 @@ fn evaluar_expresion(
             }
         }
 
-        Expresion::Binaria { izquierda, operador, derecha } => {
+        Expresion::Binaria {
+            izquierda,
+            operador,
+            derecha,
+        } => {
             let izq = evaluar_expresion(izquierda, ambito, store, declaraciones)?;
             let der = evaluar_expresion(derecha, ambito, store, declaraciones)?;
             evaluar_binaria(izq, operador, der)
         }
 
-        Expresion::Unaria { operador, expr: inner } => {
+        Expresion::Unaria {
+            operador,
+            expr: inner,
+        } => {
             let val = evaluar_expresion(inner, ambito, store, declaraciones)?;
             match operador {
                 OperadorUnario::Negar => match val {
@@ -922,9 +1007,7 @@ fn evaluar_expresion(
             }
         }
 
-        Expresion::Grupo(inner) => {
-            evaluar_expresion(inner, ambito, store, declaraciones)
-        }
+        Expresion::Grupo(inner) => evaluar_expresion(inner, ambito, store, declaraciones),
 
         Expresion::Asignacion { variable, valor } => {
             let val = evaluar_expresion(valor, ambito, store, declaraciones)?;
@@ -957,18 +1040,14 @@ fn evaluar_expresion(
             Ok(ValorGUI::Texto(json_str))
         }
 
-        Expresion::Ok(inner) => {
-            evaluar_expresion(inner, ambito, store, declaraciones)
-        }
+        Expresion::Ok(inner) => evaluar_expresion(inner, ambito, store, declaraciones),
 
         Expresion::Error(inner) => {
             let val = evaluar_expresion(inner, ambito, store, declaraciones)?;
             Err(format!("Error: {}", val.to_display()))
         }
 
-        Expresion::Algo(inner) => {
-            evaluar_expresion(inner, ambito, store, declaraciones)
-        }
+        Expresion::Algo(inner) => evaluar_expresion(inner, ambito, store, declaraciones),
 
         Expresion::Referencia { expr: inner, .. } => {
             evaluar_expresion(inner, ambito, store, declaraciones)
@@ -987,7 +1066,11 @@ fn evaluar_expresion(
                 if idx_num < arr.len() {
                     Ok(ValorGUI::from_serde(&arr[idx_num]))
                 } else {
-                    Err(format!("Índice {} fuera de rango (len={})", idx_num, arr.len()))
+                    Err(format!(
+                        "Índice {} fuera de rango (len={})",
+                        idx_num,
+                        arr.len()
+                    ))
                 }
             } else {
                 Err("No se puede indexar un valor que no es un array".to_string())
@@ -1011,7 +1094,9 @@ fn evaluar_expresion(
         Expresion::Anterior(inner) => evaluar_expresion(inner, ambito, store, declaraciones),
 
         // No implementados
-        Expresion::Instanciacion { .. } => Err("Instanciación no soportada en WASM GUI".to_string()),
+        Expresion::Instanciacion { .. } => {
+            Err("Instanciación no soportada en WASM GUI".to_string())
+        }
         Expresion::LiteralExacto(_, _) => Err("Literal exacto no soportado".to_string()),
         Expresion::AsignacionCampo { .. } => Err("Asignación de campo no soportada".to_string()),
         Expresion::ArraySet { .. } => Err("ArraySet no soportado".to_string()),
@@ -1019,11 +1104,7 @@ fn evaluar_expresion(
     }
 }
 
-fn evaluar_binaria(
-    izq: ValorGUI,
-    operador: &Operador,
-    der: ValorGUI,
-) -> Result<ValorGUI, String> {
+fn evaluar_binaria(izq: ValorGUI, operador: &Operador, der: ValorGUI) -> Result<ValorGUI, String> {
     match operador {
         Operador::Suma => Ok(sumar(izq, der)),
         Operador::Resta => Ok(restar(izq, der)),
@@ -1093,16 +1174,32 @@ fn multiplicar(a: ValorGUI, b: ValorGUI) -> ValorGUI {
 fn dividir(a: ValorGUI, b: ValorGUI) -> ValorGUI {
     match (a, b) {
         (ValorGUI::Entero(a), ValorGUI::Entero(b)) => {
-            if b == 0 { ValorGUI::Nulo } else { ValorGUI::Entero(a / b) }
+            if b == 0 {
+                ValorGUI::Nulo
+            } else {
+                ValorGUI::Entero(a / b)
+            }
         }
         (ValorGUI::Decimal(a), ValorGUI::Decimal(b)) => {
-            if b == 0.0 { ValorGUI::Nulo } else { ValorGUI::Decimal(a / b) }
+            if b == 0.0 {
+                ValorGUI::Nulo
+            } else {
+                ValorGUI::Decimal(a / b)
+            }
         }
         (ValorGUI::Entero(a), ValorGUI::Decimal(b)) => {
-            if b == 0.0 { ValorGUI::Nulo } else { ValorGUI::Decimal(a as f64 / b) }
+            if b == 0.0 {
+                ValorGUI::Nulo
+            } else {
+                ValorGUI::Decimal(a as f64 / b)
+            }
         }
         (ValorGUI::Decimal(a), ValorGUI::Entero(b)) => {
-            if b == 0 { ValorGUI::Nulo } else { ValorGUI::Decimal(a / b as f64) }
+            if b == 0 {
+                ValorGUI::Nulo
+            } else {
+                ValorGUI::Decimal(a / b as f64)
+            }
         }
         _ => ValorGUI::Nulo,
     }
@@ -1113,10 +1210,7 @@ fn dividir(a: ValorGUI, b: ValorGUI) -> ValorGUI {
 // ═══════════════════════════════════════════════════════════════════
 
 /// Inicializa el estado evaluando la función `main` (variables iniciales)
-fn inicializar_estado(
-    declaraciones: &[Declaracion],
-    store: &VariableStore,
-) {
+fn inicializar_estado(declaraciones: &[Declaracion], store: &VariableStore) {
     for decl in declaraciones {
         if let Declaracion::Funcion { nombre, cuerpo, .. } = decl {
             if nombre == "main" {
@@ -1131,7 +1225,8 @@ fn inicializar_estado(
                                 Expresion::LiteralBooleano(b) => ValorGUI::Booleano(*b),
                                 Expresion::LiteralNulo => ValorGUI::Nulo,
                                 _ => {
-                                    match evaluar_expresion(expr, &mut ambito, store, declaraciones) {
+                                    match evaluar_expresion(expr, &mut ambito, store, declaraciones)
+                                    {
                                         Ok(v) => v,
                                         Err(_) => ValorGUI::Nulo,
                                     }
@@ -1165,30 +1260,24 @@ fn procesar_click(x: f64, y: f64) {
 
         // Buscar widget clickeado (de atrás hacia adelante para Z-order)
         for area in state.hit_areas.iter().rev() {
-            if x >= area.x && x <= area.x + area.ancho
-                && y >= area.y && y <= area.y + area.alto
-            {
+            if x >= area.x && x <= area.x + area.ancho && y >= area.y && y <= area.y + area.alto {
                 match &area.layout {
                     Layout::Button { callback, .. } if !callback.is_empty() => {
                         web_sys::console::log_1(
-                            &format!("Click en botón, callback: {}", callback).into()
+                            &format!("Click en botón, callback: {}", callback).into(),
                         );
                         // Ejecutar la función callback
                         let args: Vec<ValorGUI> = Vec::new();
-                        match ejecutar_funcion(
-                            callback,
-                            &args,
-                            &state.declaraciones,
-                            &state.store,
-                        ) {
+                        match ejecutar_funcion(callback, &args, &state.declaraciones, &state.store)
+                        {
                             Ok(_) => {
                                 web_sys::console::log_1(
-                                    &format!("Callback '{}' ejecutado OK", callback).into()
+                                    &format!("Callback '{}' ejecutado OK", callback).into(),
                                 );
                             }
                             Err(e) => {
                                 web_sys::console::log_1(
-                                    &format!("Error en callback '{}': {}", callback, e).into()
+                                    &format!("Error en callback '{}': {}", callback, e).into(),
                                 );
                             }
                         }
@@ -1196,7 +1285,7 @@ fn procesar_click(x: f64, y: f64) {
                     Layout::TextInput { variable, .. } => {
                         // Para TextInput, mostrar prompt en consola por ahora
                         web_sys::console::log_1(
-                            &format!("Click en TextInput '{}'", variable).into()
+                            &format!("Click en TextInput '{}'", variable).into(),
                         );
                         // En una implementación futura, esto abriría un prompt
                         // o conectaría con un input HTML oculto
@@ -1212,7 +1301,8 @@ fn procesar_click(x: f64, y: f64) {
 /// Configura event listeners en el canvas para clicks
 fn configurar_eventos_canvas(canvas_id: &str) {
     let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document.get_element_by_id(canvas_id)
+    let canvas = document
+        .get_element_by_id(canvas_id)
         .unwrap()
         .dyn_into::<HtmlCanvasElement>()
         .unwrap();
@@ -1225,7 +1315,9 @@ fn configurar_eventos_canvas(canvas_id: &str) {
         procesar_click(x, y);
     }) as Box<dyn FnMut(_)>);
 
-    canvas.add_event_listener_with_callback("click", closure_click.as_ref().unchecked_ref()).ok();
+    canvas
+        .add_event_listener_with_callback("click", closure_click.as_ref().unchecked_ref())
+        .ok();
     closure_click.forget();
 }
 
@@ -1309,7 +1401,15 @@ pub fn renderizar(canvas_id: &str, codigo: &str) -> String {
                 let s = state.borrow();
                 if let Some(layout_ref) = &s.ultimo_layout {
                     let mut areas_local: Vec<WidgetHitArea> = Vec::new();
-                    renderizar_layout(&ctx, layout_ref, 10.0, 10.0, ancho - 20.0, &mut areas_local, &s.store);
+                    renderizar_layout(
+                        &ctx,
+                        layout_ref,
+                        10.0,
+                        10.0,
+                        ancho - 20.0,
+                        &mut areas_local,
+                        &s.store,
+                    );
                     // Devolver áreas para almacenar
                     drop(s);
                     let mut s = state.borrow_mut();
@@ -1384,7 +1484,15 @@ pub fn rerenderizar(canvas_id: &str) -> String {
         let s = state.borrow();
         if let Some(layout_ref) = &s.ultimo_layout {
             let mut areas_local: Vec<WidgetHitArea> = Vec::new();
-            renderizar_layout(&ctx, layout_ref, 10.0, 10.0, ancho - 20.0, &mut areas_local, &s.store);
+            renderizar_layout(
+                &ctx,
+                layout_ref,
+                10.0,
+                10.0,
+                ancho - 20.0,
+                &mut areas_local,
+                &s.store,
+            );
             drop(s);
             let mut s = state.borrow_mut();
             s.hit_areas = areas_local;
