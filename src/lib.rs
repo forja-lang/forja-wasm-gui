@@ -937,7 +937,9 @@ fn evaluar_declaracion(
         | Declaracion::AsignacionMiembro { .. }
         | Declaracion::AsignacionIndex { .. }
         | Declaracion::AsignacionMultiple { .. }
-        | Declaracion::Repetir { .. } => Ok(ValorGUI::Nulo),
+        | Declaracion::Repetir { .. }
+        | Declaracion::Romper
+        | Declaracion::Continuar => Ok(ValorGUI::Nulo),
     }
 }
 
@@ -1101,6 +1103,19 @@ fn evaluar_expresion(
         Expresion::AsignacionCampo { .. } => Err("Asignación de campo no soportada".to_string()),
         Expresion::ArraySet { .. } => Err("ArraySet no soportado".to_string()),
         Expresion::Coincidir { .. } => Err("Match no soportado en WASM GUI".to_string()),
+        Expresion::Ternario { condicion, si_verdadero, si_falso } => {
+            let cond = evaluar_expresion(condicion, ambito, store, declaraciones)?;
+            let b = match &cond {
+                ValorGUI::Booleano(b) => *b,
+                ValorGUI::Entero(n) => *n != 0,
+                _ => false,
+            };
+            if b {
+                evaluar_expresion(si_verdadero, ambito, store, declaraciones)
+            } else {
+                evaluar_expresion(si_falso, ambito, store, declaraciones)
+            }
+        }
     }
 }
 
