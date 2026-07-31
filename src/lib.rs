@@ -930,6 +930,7 @@ fn evaluar_declaracion(
         Declaracion::Funcion { .. }
         | Declaracion::Clase { .. }
         | Declaracion::Importar(_)
+        | Declaracion::ImportarExterna(_)
         | Declaracion::Enum { .. }
         | Declaracion::Rasgo { .. }
         | Declaracion::Implementacion { .. }
@@ -1116,6 +1117,7 @@ fn evaluar_expresion(
                 evaluar_expresion(si_falso, ambito, store, declaraciones)
             }
         }
+        Expresion::LlamadaMetodo { .. } => Ok(ValorGUI::Nulo),
     }
 }
 
