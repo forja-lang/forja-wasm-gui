@@ -1104,7 +1104,11 @@ fn evaluar_expresion(
         Expresion::AsignacionCampo { .. } => Err("Asignación de campo no soportada".to_string()),
         Expresion::ArraySet { .. } => Err("ArraySet no soportado".to_string()),
         Expresion::Coincidir { .. } => Err("Match no soportado en WASM GUI".to_string()),
-        Expresion::Ternario { condicion, si_verdadero, si_falso } => {
+        Expresion::Ternario {
+            condicion,
+            si_verdadero,
+            si_falso,
+        } => {
             let cond = evaluar_expresion(condicion, ambito, store, declaraciones)?;
             let b = match &cond {
                 ValorGUI::Booleano(b) => *b,
@@ -1118,6 +1122,7 @@ fn evaluar_expresion(
             }
         }
         Expresion::LlamadaMetodo { .. } => Ok(ValorGUI::Nulo),
+        Expresion::Nada | Expresion::Ninguno => Ok(ValorGUI::Nulo),
     }
 }
 
