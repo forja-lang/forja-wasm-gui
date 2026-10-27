@@ -4,7 +4,7 @@
 // No depende de winit, Xilem, Masonry ni Vello.
 //
 // Arquitectura:
-//   - Compila código Forja a AST vía forja::compilar_con_ast()
+//   - Compila código Forja a AST vía forja::transpilar_a_rust_con_ast()
 //   - Convierte AST → Layout simplificado
 //   - Renderiza Layout en Canvas 2D
 //   - Maneja eventos (click) con hit-testing sobre rectángulos de widgets
@@ -1395,7 +1395,7 @@ pub fn renderizar(canvas_id: &str, codigo: &str) -> String {
     ctx.fill_rect(0.0, 0.0, ancho, alto);
 
     // Compilar código Forja
-    match forja::compilar_con_ast(codigo) {
+    match forja::transpilar_a_rust_con_ast(codigo) {
         Ok((declaraciones, _rust_code)) => {
             // Almacenar estado global
             let store = VariableStore::new();
