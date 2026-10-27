@@ -1350,7 +1350,7 @@ fn configurar_eventos_canvas(canvas_id: &str) {
 /// Retorna la versión del crate
 #[wasm_bindgen]
 pub fn version() -> String {
-    "forja-wasm-gui v0.1.0".to_string()
+    format!("forja-wasm-gui v{}", env!("CARGO_PKG_VERSION"))
 }
 
 /// Renderiza un layout Forja en un canvas.
