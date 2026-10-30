@@ -342,9 +342,11 @@ fn renderizar_layout(
             ctx,
             variable,
             placeholder,
-            x,
-            y,
-            ancho_disponible,
+            Caja {
+                x,
+                y,
+                ancho: ancho_disponible,
+            },
             store,
             hit_areas,
             layout.clone(),
@@ -392,7 +394,7 @@ fn renderizar_boton(
     hit_areas: &mut Vec<WidgetHitArea>,
     layout: Layout,
 ) -> (f64, f64) {
-    let ancho = ancho_disponible.max(80.0).min(300.0);
+    let ancho = ancho_disponible.clamp(80.0, 300.0);
     let alto = 38.0;
     let radio_esq = 20.0;
 
@@ -425,17 +427,27 @@ fn renderizar_boton(
     (ancho, alto + 4.0)
 }
 
+/// Caja de layout: origen y ancho disponible.
+struct Caja {
+    x: f64,
+    y: f64,
+    ancho: f64,
+}
+
 fn renderizar_text_input(
     ctx: &CanvasRenderingContext2d,
     variable: &str,
     placeholder: &str,
-    x: f64,
-    y: f64,
-    ancho_disponible: f64,
+    caja: Caja,
     store: &VariableStore,
     hit_areas: &mut Vec<WidgetHitArea>,
     layout: Layout,
 ) -> (f64, f64) {
+    let Caja {
+        x,
+        y,
+        ancho: ancho_disponible,
+    } = caja;
     let ancho = ancho_disponible.max(120.0);
     let alto = 38.0;
     let radio_esq = 4.0;
@@ -533,7 +545,7 @@ fn estimar_ancho(layout: &Layout, _default_ancho: f64) -> f64 {
             (texto.len() as f64 * 8.0 + 16.0).min(250.0)
         }
         Layout::VariableLabel { .. } => 100.0,
-        Layout::Button { texto, .. } => (texto.len() as f64 * 9.0 + 32.0).max(80.0).min(200.0),
+        Layout::Button { texto, .. } => (texto.len() as f64 * 9.0 + 32.0).clamp(80.0, 200.0),
         Layout::TextInput { .. } => 150.0,
         Layout::Spacer(tam) => *tam,
         Layout::Column { .. } => _default_ancho,
