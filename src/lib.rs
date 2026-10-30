@@ -957,6 +957,24 @@ fn evaluar_expresion(
         Expresion::LiteralBooleano(b) => Ok(ValorGUI::Booleano(*b)),
         Expresion::LiteralNulo => Ok(ValorGUI::Nulo),
 
+        // `si` como elemento de layout: corre la rama elegida, sin valor.
+        Expresion::Si {
+            condicion,
+            bloque_verdadero,
+            bloque_falso,
+        } => {
+            let cond = evaluar_expresion(condicion, ambito, store, declaraciones)?;
+            let rama = if cond.es_verdadero() {
+                Some(bloque_verdadero)
+            } else {
+                bloque_falso.as_ref()
+            };
+            match rama {
+                Some(bloque) => evaluar_bloque(bloque, ambito, store, declaraciones),
+                None => Ok(ValorGUI::Nulo),
+            }
+        }
+
         Expresion::Identificador { nombre, .. } => {
             if let Some(val) = ambito.obtener(nombre) {
                 Ok(val.clone())
@@ -1083,7 +1101,7 @@ fn evaluar_expresion(
         // No implementados en runtime
         Expresion::Closure { .. } => Err("Closures no soportados en WASM GUI".to_string()),
         Expresion::Hilo { .. } => Err("Hilos no soportados en WASM GUI".to_string()),
-        Expresion::CanalNuevo => Err("Canales no soportados en WASM GUI".to_string()),
+        Expresion::CanalNuevo(_) => Err("Canales no soportados en WASM GUI".to_string()),
         Expresion::Seleccionar { .. } => Err("Seleccionar no soportado en WASM GUI".to_string()),
         Expresion::Try(inner) => {
             let val = evaluar_expresion(inner, ambito, store, declaraciones)?;

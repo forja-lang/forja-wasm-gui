@@ -79,7 +79,7 @@ El workflow del repo clona el workspace Forja, superpone este crate y ejecuta
 
 ## Estado
 
-Versión `0.9.4`; el consumo es por ruta desde el
+Versión `0.9.5`; el consumo es por ruta desde el
 workspace [forja-lang/forja](https://github.com/forja-lang/forja).
 
 ## Licencia
