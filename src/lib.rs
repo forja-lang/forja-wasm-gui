@@ -1262,30 +1262,46 @@ fn dividir(a: ValorGUI, b: ValorGUI) -> ValorGUI {
 // ═══════════════════════════════════════════════════════════════════
 
 /// Inicializa el estado evaluando la función `main` (variables iniciales)
+fn valor_variable(
+    expr: &Expresion,
+    ambito: &mut Ambito,
+    store: &VariableStore,
+    declaraciones: &[Declaracion],
+) -> ValorGUI {
+    match expr {
+        Expresion::LiteralNumero(n) => ValorGUI::Entero(*n),
+        Expresion::LiteralDecimal(f) => ValorGUI::Decimal(*f),
+        Expresion::LiteralTexto(s) => ValorGUI::Texto(s.clone()),
+        Expresion::LiteralBooleano(b) => ValorGUI::Booleano(*b),
+        Expresion::LiteralNulo => ValorGUI::Nulo,
+        _ => evaluar_expresion(expr, ambito, store, declaraciones).unwrap_or(ValorGUI::Nulo),
+    }
+}
+
 fn inicializar_estado(declaraciones: &[Declaracion], store: &VariableStore) {
+    let mut ambito = Ambito::new();
+
+    // Variables globales (top-level): los callbacks las ven a través del store.
+    for decl in declaraciones {
+        if let Declaracion::Variable { nombre, valor, .. } = decl {
+            let val = match valor {
+                Some(expr) => valor_variable(expr, &mut ambito, store, declaraciones),
+                None => ValorGUI::Nulo,
+            };
+            ambito.asignar(nombre.clone(), val.clone());
+            store.set(nombre, val.to_json_value());
+        }
+    }
+
+    // Variables locales de main().
     for decl in declaraciones {
         if let Declaracion::Funcion { nombre, cuerpo, .. } = decl {
             if nombre == "main" {
-                let mut ambito = Ambito::new();
                 for d in cuerpo {
                     if let Declaracion::Variable { nombre, valor, .. } = d {
-                        let val = if let Some(expr) = valor {
-                            match expr {
-                                Expresion::LiteralNumero(n) => ValorGUI::Entero(*n),
-                                Expresion::LiteralDecimal(f) => ValorGUI::Decimal(*f),
-                                Expresion::LiteralTexto(s) => ValorGUI::Texto(s.clone()),
-                                Expresion::LiteralBooleano(b) => ValorGUI::Booleano(*b),
-                                Expresion::LiteralNulo => ValorGUI::Nulo,
-                                _ => {
-                                    match evaluar_expresion(expr, &mut ambito, store, declaraciones)
-                                    {
-                                        Ok(v) => v,
-                                        Err(_) => ValorGUI::Nulo,
-                                    }
-                                }
-                            }
-                        } else {
-                            ValorGUI::Nulo
+                        let val = match valor {
+                            Some(expr) => valor_variable(expr, &mut ambito, store, declaraciones),
+                            None => ValorGUI::Nulo,
                         };
                         ambito.asignar(nombre.clone(), val.clone());
                         store.set(nombre, val.to_json_value());
@@ -1303,7 +1319,8 @@ fn inicializar_estado(declaraciones: &[Declaracion], store: &VariableStore) {
 
 /// Procesa un click en coordenadas (x, y) del canvas.
 /// Busca el widget en hit_areas, y si es un botón ejecuta su callback.
-fn procesar_click(x: f64, y: f64) {
+fn procesar_click(x: f64, y: f64, canvas_id: &str) {
+    let mut rerender = false;
     APP_STATE.with(|state| {
         let state = state.borrow_mut();
         if state.declaraciones.is_empty() {
@@ -1326,6 +1343,7 @@ fn procesar_click(x: f64, y: f64) {
                                 web_sys::console::log_1(
                                     &format!("Callback '{}' ejecutado OK", callback).into(),
                                 );
+                                rerender = true;
                             }
                             Err(e) => {
                                 web_sys::console::log_1(
@@ -1348,29 +1366,41 @@ fn procesar_click(x: f64, y: f64) {
             }
         }
     });
+
+    // El callback pudo mutar el estado (store): re-renderizar para reflejarlo.
+    if rerender {
+        let _ = rerenderizar(canvas_id);
+    }
 }
 
 /// Configura event listeners en el canvas para clicks
 fn configurar_eventos_canvas(canvas_id: &str) {
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document
-        .get_element_by_id(canvas_id)
-        .unwrap()
-        .dyn_into::<HtmlCanvasElement>()
-        .unwrap();
+    // El listener se registra una sola vez: `renderizar` se llama en cada
+    // render y antes duplicaba los handlers (un click disparaba N veces).
+    static CONFIGURADO: std::sync::Once = std::sync::Once::new();
+    let canvas_id = canvas_id.to_string();
+    CONFIGURADO.call_once(|| {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let canvas = document
+            .get_element_by_id(&canvas_id)
+            .unwrap()
+            .dyn_into::<HtmlCanvasElement>()
+            .unwrap();
 
-    // Closure para click
-    let closure_click = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-        let x = event.offset_x() as f64;
-        let y = event.offset_y() as f64;
-        web_sys::console::log_1(&format!("Click en ({}, {})", x, y).into());
-        procesar_click(x, y);
-    }) as Box<dyn FnMut(_)>);
+        let canvas_para_click = canvas_id.clone();
+        // Closure para click
+        let closure_click = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+            let x = event.offset_x() as f64;
+            let y = event.offset_y() as f64;
+            web_sys::console::log_1(&format!("Click en ({}, {})", x, y).into());
+            procesar_click(x, y, &canvas_para_click);
+        }) as Box<dyn FnMut(_)>);
 
-    canvas
-        .add_event_listener_with_callback("click", closure_click.as_ref().unchecked_ref())
-        .ok();
-    closure_click.forget();
+        canvas
+            .add_event_listener_with_callback("click", closure_click.as_ref().unchecked_ref())
+            .ok();
+        closure_click.forget();
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════
