@@ -38,7 +38,7 @@ serde_json = "1"
 default = []
 
 [package.metadata]
-# F2-T2: habilitar wasm-opt para reducir el tamaño del binario.
+# habilitar wasm-opt para reducir el tamaño del binario.
 # Los flags habilitan las features modernas de wasm que genera LLVM
 # (bulk-memory, nontrapping-float-to-int, sign-ext).
 wasm-opt = ["--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-reference-types", "--enable-multivalue", "-O3"]
