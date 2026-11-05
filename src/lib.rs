@@ -1049,6 +1049,27 @@ fn evaluar_expresion(
             Ok(val)
         }
 
+        // `x += 1` y compañía: se evalúa el valor actual, se aplica el
+        // operador y se vuelve a asignar. En la GUI sólo se soportan
+        // identificadores simples (miembro/índice queda como error claro).
+        Expresion::AsignacionCompuesta {
+            objetivo,
+            operador,
+            valor,
+        } => {
+            if let Expresion::Identificador { nombre, .. } = objetivo.as_ref() {
+                let actual = evaluar_expresion(objetivo, ambito, store, declaraciones)?;
+                let incremento = evaluar_expresion(valor, ambito, store, declaraciones)?;
+                let nuevo = evaluar_binaria(actual, operador, incremento)?;
+                ambito.asignar(nombre.clone(), nuevo.clone());
+                store.set(nombre, nuevo.to_json_value());
+                Ok(nuevo)
+            } else {
+                Err("Asignación compuesta sobre miembro o índice no soportada en la GUI"
+                    .to_string())
+            }
+        }
+
         Expresion::Arreglo(elementos) => {
             let mut values = Vec::new();
             for elem in elementos {
