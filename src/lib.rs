@@ -1133,6 +1133,9 @@ fn evaluar_expresion(
         Expresion::LiteralExacto(_, _) => Err("Literal exacto no soportado".to_string()),
         Expresion::AsignacionCampo { .. } => Err("Asignación de campo no soportada".to_string()),
         Expresion::ArraySet { .. } => Err("ArraySet no soportado".to_string()),
+        Expresion::AsignacionCompuesta { .. } => {
+            Err("Asignación compuesta no soportada en WASM GUI".to_string())
+        }
         Expresion::Coincidir { .. } => Err("Match no soportado en WASM GUI".to_string()),
         Expresion::Ternario {
             condicion,
@@ -1375,32 +1378,38 @@ fn procesar_click(x: f64, y: f64, canvas_id: &str) {
 
 /// Configura event listeners en el canvas para clicks
 fn configurar_eventos_canvas(canvas_id: &str) {
-    // El listener se registra una sola vez: `renderizar` se llama en cada
-    // render y antes duplicaba los handlers (un click disparaba N veces).
-    static CONFIGURADO: std::sync::Once = std::sync::Once::new();
-    let canvas_id = canvas_id.to_string();
-    CONFIGURADO.call_once(|| {
-        let document = web_sys::window().unwrap().document().unwrap();
-        let canvas = document
-            .get_element_by_id(&canvas_id)
-            .unwrap()
-            .dyn_into::<HtmlCanvasElement>()
-            .unwrap();
+    let document = match web_sys::window().and_then(|w| w.document()) {
+        Some(d) => d,
+        None => return,
+    };
+    let canvas = match document
+        .get_element_by_id(canvas_id)
+        .and_then(|el| el.dyn_into::<HtmlCanvasElement>().ok())
+    {
+        Some(c) => c,
+        None => return,
+    };
 
-        let canvas_para_click = canvas_id.clone();
-        // Closure para click
-        let closure_click = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-            let x = event.offset_x() as f64;
-            let y = event.offset_y() as f64;
-            web_sys::console::log_1(&format!("Click en ({}, {})", x, y).into());
-            procesar_click(x, y, &canvas_para_click);
-        }) as Box<dyn FnMut(_)>);
+    // Listener por elemento: el ClientRouter reemplaza el DOM, así que un canvas
+    // nuevo (mismo id) debe volver a registrar su listener. Un `Once` global no
+    // sirve porque sobrevive a la navegación y dejaría el canvas nuevo sin click.
+    if canvas.get_attribute("data-gui-listener").is_some() {
+        return;
+    }
+    let _ = canvas.set_attribute("data-gui-listener", "1");
 
-        canvas
-            .add_event_listener_with_callback("click", closure_click.as_ref().unchecked_ref())
-            .ok();
-        closure_click.forget();
-    });
+    let canvas_para_click = canvas_id.to_string();
+    let closure_click = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        let x = event.offset_x() as f64;
+        let y = event.offset_y() as f64;
+        web_sys::console::log_1(&format!("Click en ({}, {})", x, y).into());
+        procesar_click(x, y, &canvas_para_click);
+    }) as Box<dyn FnMut(_)>);
+
+    canvas
+        .add_event_listener_with_callback("click", closure_click.as_ref().unchecked_ref())
+        .ok();
+    closure_click.forget();
 }
 
 // ═══════════════════════════════════════════════════════════════════
