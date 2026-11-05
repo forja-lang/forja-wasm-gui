@@ -1065,8 +1065,10 @@ fn evaluar_expresion(
                 store.set(nombre, nuevo.to_json_value());
                 Ok(nuevo)
             } else {
-                Err("Asignación compuesta sobre miembro o índice no soportada en la GUI"
-                    .to_string())
+                Err(
+                    "Asignación compuesta sobre miembro o índice no soportada en la GUI"
+                        .to_string(),
+                )
             }
         }
 
