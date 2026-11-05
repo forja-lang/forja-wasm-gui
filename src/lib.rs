@@ -1133,9 +1133,6 @@ fn evaluar_expresion(
         Expresion::LiteralExacto(_, _) => Err("Literal exacto no soportado".to_string()),
         Expresion::AsignacionCampo { .. } => Err("Asignación de campo no soportada".to_string()),
         Expresion::ArraySet { .. } => Err("ArraySet no soportado".to_string()),
-        Expresion::AsignacionCompuesta { .. } => {
-            Err("Asignación compuesta no soportada en WASM GUI".to_string())
-        }
         Expresion::Coincidir { .. } => Err("Match no soportado en WASM GUI".to_string()),
         Expresion::Ternario {
             condicion,
