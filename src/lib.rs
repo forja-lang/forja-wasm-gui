@@ -58,7 +58,7 @@ impl ValorGUI {
         }
     }
 
-    fn to_json_value(&self) -> serde_json::Value {
+    fn to_json_valor(&self) -> serde_json::Value {
         match self {
             ValorGUI::Texto(t) => serde_json::Value::String(t.clone()),
             ValorGUI::Entero(n) => serde_json::Value::Number((*n).into()),
@@ -133,33 +133,33 @@ pub enum Layout {
 // ═══════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone)]
-pub struct VariableStore {
+pub struct VariableAlmacen {
     variables: Rc<RefCell<HashMap<String, serde_json::Value>>>,
 }
 
-impl VariableStore {
-    pub fn new() -> Self {
-        VariableStore {
+impl VariableAlmacen {
+    pub fn nuevo() -> Self {
+        VariableAlmacen {
             variables: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
-    pub fn get(&self, name: &str) -> Option<serde_json::Value> {
+    pub fn obtener(&self, name: &str) -> Option<serde_json::Value> {
         self.variables.borrow().get(name).cloned()
     }
 
-    pub fn set(&self, name: &str, value: serde_json::Value) {
+    pub fn fijar(&self, name: &str, value: serde_json::Value) {
         self.variables.borrow_mut().insert(name.to_string(), value);
     }
 
-    pub fn contains(&self, name: &str) -> bool {
+    pub fn contiene(&self, name: &str) -> bool {
         self.variables.borrow().contains_key(name)
     }
 }
 
-impl Default for VariableStore {
+impl Default for VariableAlmacen {
     fn default() -> Self {
-        Self::new()
+        Self::nuevo()
     }
 }
 
@@ -172,7 +172,7 @@ struct Ambito {
 }
 
 impl Ambito {
-    fn new() -> Self {
+    fn nuevo() -> Self {
         Ambito {
             variables: HashMap::new(),
         }
@@ -206,7 +206,7 @@ struct WidgetHitArea {
 // ═══════════════════════════════════════════════════════════════════
 
 struct AppState {
-    store: VariableStore,
+    almacen: VariableAlmacen,
     declaraciones: Vec<forja::ast::Declaracion>,
     hit_areas: Vec<WidgetHitArea>,
     ultimo_layout: Option<Layout>,
@@ -215,9 +215,9 @@ struct AppState {
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn nuevo() -> Self {
         AppState {
-            store: VariableStore::new(),
+            almacen: VariableAlmacen::nuevo(),
             declaraciones: Vec::new(),
             hit_areas: Vec::new(),
             ultimo_layout: None,
@@ -228,7 +228,7 @@ impl AppState {
 }
 
 thread_local! {
-    static APP_STATE: RefCell<AppState> = RefCell::new(AppState::new());
+    static APP_STATE: RefCell<AppState> = RefCell::new(AppState::nuevo());
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -262,21 +262,21 @@ fn renderizar_layout(
     y: f64,
     ancho_disponible: f64,
     hit_areas: &mut Vec<WidgetHitArea>,
-    store: &VariableStore,
+    almacen: &VariableAlmacen,
 ) -> (f64, f64) {
     match layout {
         Layout::Column { children, gap } => {
             let mut cy: f64 = y + gap;
             let mut max_ancho: f64 = 0.0;
-            for child in children {
+            for hijo in children {
                 let usado = renderizar_layout(
                     ctx,
-                    child,
+                    hijo,
                     x + gap,
                     cy,
                     ancho_disponible - gap * 2.0,
                     hit_areas,
-                    store,
+                    almacen,
                 );
                 let alto: f64 = usado.1;
                 max_ancho = max_ancho.max(usado.0 + gap * 2.0);
@@ -290,14 +290,14 @@ fn renderizar_layout(
             let mut max_alto: f64 = 0.0;
             // Primera pasada: medir todos los hijos
             let mut medidas: Vec<(f64, f64)> = Vec::new();
-            for child in children {
-                let ancho_est = estimar_ancho(child, ancho_disponible / children.len() as f64);
+            for hijo in children {
+                let ancho_est = estimar_ancho(hijo, ancho_disponible / children.len() as f64);
                 medidas.push((ancho_est, 40.0)); // alto estimado
             }
-            for (i, child) in children.iter().enumerate() {
+            for (i, hijo) in children.iter().enumerate() {
                 let ancho_hijo = medidas[i].0;
                 let usado =
-                    renderizar_layout(ctx, child, cx, y + gap, ancho_hijo, hit_areas, store);
+                    renderizar_layout(ctx, hijo, cx, y + gap, ancho_hijo, hit_areas, almacen);
                 max_alto = max_alto.max(usado.1 + gap * 2.0);
                 cx += ancho_hijo + gap;
             }
@@ -307,22 +307,23 @@ fn renderizar_layout(
         Layout::ZStack(children) => {
             let mut max_ancho: f64 = 0.0;
             let mut max_alto: f64 = 0.0;
-            for child in children {
-                let usado = renderizar_layout(ctx, child, x, y, ancho_disponible, hit_areas, store);
+            for hijo in children {
+                let usado =
+                    renderizar_layout(ctx, hijo, x, y, ancho_disponible, hit_areas, almacen);
                 max_ancho = max_ancho.max(usado.0);
                 max_alto = max_alto.max(usado.1);
             }
             (max_ancho, max_alto)
         }
 
-        Layout::Label { texto } => renderizar_label(ctx, texto, x, y, ancho_disponible),
+        Layout::Label { texto } => renderizar_etiqueta(ctx, texto, x, y, ancho_disponible),
 
         Layout::VariableLabel { variable } => {
-            let texto = store
-                .get(variable)
+            let texto = almacen
+                .obtener(variable)
                 .map(|v| ValorGUI::from_serde(&v).to_display())
                 .unwrap_or_else(|| format!("{{{{{}}}}}", variable));
-            renderizar_label(ctx, &texto, x, y, ancho_disponible)
+            renderizar_etiqueta(ctx, &texto, x, y, ancho_disponible)
         }
 
         Layout::Button { texto, .. } => renderizar_boton(
@@ -338,7 +339,7 @@ fn renderizar_layout(
         Layout::TextInput {
             variable,
             placeholder,
-        } => renderizar_text_input(
+        } => renderizar_texto_entrada(
             ctx,
             variable,
             placeholder,
@@ -347,7 +348,7 @@ fn renderizar_layout(
                 y,
                 ancho: ancho_disponible,
             },
-            store,
+            almacen,
             hit_areas,
             layout.clone(),
         ),
@@ -371,7 +372,7 @@ fn renderizar_layout(
     }
 }
 
-fn renderizar_label(
+fn renderizar_etiqueta(
     ctx: &CanvasRenderingContext2d,
     texto: &str,
     x: f64,
@@ -434,12 +435,12 @@ struct Caja {
     ancho: f64,
 }
 
-fn renderizar_text_input(
+fn renderizar_texto_entrada(
     ctx: &CanvasRenderingContext2d,
     variable: &str,
     placeholder: &str,
     caja: Caja,
-    store: &VariableStore,
+    almacen: &VariableAlmacen,
     hit_areas: &mut Vec<WidgetHitArea>,
     layout: Layout,
 ) -> (f64, f64) {
@@ -453,8 +454,8 @@ fn renderizar_text_input(
     let radio_esq = 4.0;
 
     // Obtener valor actual
-    let valor_actual = store
-        .get(variable)
+    let valor_actual = almacen
+        .obtener(variable)
         .map(|v| ValorGUI::from_serde(&v).to_display())
         .unwrap_or_default();
 
@@ -782,7 +783,7 @@ fn ejecutar_funcion(
     nombre: &str,
     args: &[ValorGUI],
     declaraciones: &[Declaracion],
-    store: &VariableStore,
+    almacen: &VariableAlmacen,
 ) -> Result<ValorGUI, String> {
     buscar_funcion(nombre, declaraciones).and_then(|func| {
         let (parametros, cuerpo) = match func {
@@ -791,17 +792,17 @@ fn ejecutar_funcion(
             } => (parametros, cuerpo),
             _ => return Err(format!("'{}' no es una función", nombre)),
         };
-        let mut ambito = Ambito::new();
+        let mut ambito = Ambito::nuevo();
 
         for (i, param) in parametros.iter().enumerate() {
             if let Some(val) = args.get(i) {
                 ambito.asignar(param.nombre.clone(), val.clone());
-            } else if let Some(json_val) = store.get(&param.nombre) {
+            } else if let Some(json_val) = almacen.obtener(&param.nombre) {
                 ambito.asignar(param.nombre.clone(), ValorGUI::from_serde(&json_val));
             }
         }
 
-        evaluar_bloque(cuerpo, &mut ambito, store, declaraciones)
+        evaluar_bloque(cuerpo, &mut ambito, almacen, declaraciones)
     })
 }
 
@@ -809,13 +810,13 @@ fn ejecutar_funcion(
 fn evaluar_bloque(
     bloque: &[Declaracion],
     ambito: &mut Ambito,
-    store: &VariableStore,
+    almacen: &VariableAlmacen,
     declaraciones: &[Declaracion],
 ) -> Result<ValorGUI, String> {
     for declaracion in bloque {
-        let result = evaluar_declaracion(declaracion, ambito, store, declaraciones)?;
+        let resultado = evaluar_declaracion(declaracion, ambito, almacen, declaraciones)?;
         if es_retorno(declaracion) {
-            return Ok(result);
+            return Ok(resultado);
         }
     }
     Ok(ValorGUI::Nulo)
@@ -828,13 +829,13 @@ fn es_retorno(decl: &Declaracion) -> bool {
 fn evaluar_declaracion(
     decl: &Declaracion,
     ambito: &mut Ambito,
-    store: &VariableStore,
+    almacen: &VariableAlmacen,
     declaraciones: &[Declaracion],
 ) -> Result<ValorGUI, String> {
     match decl {
         Declaracion::Retornar { valor } => {
             if let Some(expr) = valor {
-                evaluar_expresion(expr, ambito, store, declaraciones)
+                evaluar_expresion(expr, ambito, almacen, declaraciones)
             } else {
                 Ok(ValorGUI::Nulo)
             }
@@ -845,11 +846,11 @@ fn evaluar_declaracion(
             bloque_verdadero,
             bloque_falso,
         } => {
-            let cond_val = evaluar_expresion(condicion, ambito, store, declaraciones)?;
+            let cond_val = evaluar_expresion(condicion, ambito, almacen, declaraciones)?;
             if cond_val.es_verdadero() {
-                evaluar_bloque(bloque_verdadero, ambito, store, declaraciones)
+                evaluar_bloque(bloque_verdadero, ambito, almacen, declaraciones)
             } else if let Some(sino_bloque) = bloque_falso {
-                evaluar_bloque(sino_bloque, ambito, store, declaraciones)
+                evaluar_bloque(sino_bloque, ambito, almacen, declaraciones)
             } else {
                 Ok(ValorGUI::Nulo)
             }
@@ -857,13 +858,13 @@ fn evaluar_declaracion(
 
         Declaracion::Mientras { condicion, bloque } => {
             loop {
-                let cond_val = evaluar_expresion(condicion, ambito, store, declaraciones)?;
+                let cond_val = evaluar_expresion(condicion, ambito, almacen, declaraciones)?;
                 if !cond_val.es_verdadero() {
                     break;
                 }
-                let result = evaluar_bloque(bloque, ambito, store, declaraciones)?;
-                if !matches!(result, ValorGUI::Nulo) {
-                    return Ok(result);
+                let resultado = evaluar_bloque(bloque, ambito, almacen, declaraciones)?;
+                if !matches!(resultado, ValorGUI::Nulo) {
+                    return Ok(resultado);
                 }
             }
             Ok(ValorGUI::Nulo)
@@ -871,32 +872,32 @@ fn evaluar_declaracion(
 
         Declaracion::Variable { nombre, valor, .. } => {
             let val = if let Some(expr) = valor {
-                evaluar_expresion(expr, ambito, store, declaraciones)?
+                evaluar_expresion(expr, ambito, almacen, declaraciones)?
             } else {
                 ValorGUI::Nulo
             };
             ambito.asignar(nombre.clone(), val.clone());
-            store.set(nombre, val.to_json_value());
+            almacen.fijar(nombre, val.to_json_valor());
             Ok(ValorGUI::Nulo)
         }
 
         Declaracion::Asignacion { nombre, valor, .. } => {
-            let val = evaluar_expresion(valor, ambito, store, declaraciones)?;
+            let val = evaluar_expresion(valor, ambito, almacen, declaraciones)?;
             ambito.asignar(nombre.clone(), val.clone());
-            store.set(nombre, val.to_json_value());
+            almacen.fijar(nombre, val.to_json_valor());
             Ok(ValorGUI::Nulo)
         }
 
         Declaracion::LlamadaFuncion { nombre, argumentos } => {
             let mut args = Vec::new();
             for arg in argumentos {
-                args.push(evaluar_expresion(arg, ambito, store, declaraciones)?);
+                args.push(evaluar_expresion(arg, ambito, almacen, declaraciones)?);
             }
-            ejecutar_funcion(nombre, &args, declaraciones, store)
+            ejecutar_funcion(nombre, &args, declaraciones, almacen)
         }
 
         Declaracion::Expresion(expr) => {
-            evaluar_expresion(expr, ambito, store, declaraciones)?;
+            evaluar_expresion(expr, ambito, almacen, declaraciones)?;
             Ok(ValorGUI::Nulo)
         }
 
@@ -907,21 +908,21 @@ fn evaluar_declaracion(
             bloque,
         } => {
             if let Some(init) = inicializacion {
-                evaluar_declaracion(init, ambito, store, declaraciones)?;
+                evaluar_declaracion(init, ambito, almacen, declaraciones)?;
             }
             loop {
                 if let Some(cond) = condicion {
-                    let cond_val = evaluar_expresion(cond, ambito, store, declaraciones)?;
+                    let cond_val = evaluar_expresion(cond, ambito, almacen, declaraciones)?;
                     if !cond_val.es_verdadero() {
                         break;
                     }
                 }
-                let result = evaluar_bloque(bloque, ambito, store, declaraciones)?;
-                if !matches!(result, ValorGUI::Nulo) {
-                    return Ok(result);
+                let resultado = evaluar_bloque(bloque, ambito, almacen, declaraciones)?;
+                if !matches!(resultado, ValorGUI::Nulo) {
+                    return Ok(resultado);
                 }
                 if let Some(inc) = incremento {
-                    evaluar_declaracion(inc, ambito, store, declaraciones)?;
+                    evaluar_declaracion(inc, ambito, almacen, declaraciones)?;
                 }
             }
             Ok(ValorGUI::Nulo)
@@ -930,9 +931,9 @@ fn evaluar_declaracion(
         Declaracion::Cuando {
             condicion, cuerpo, ..
         } => {
-            let cond_val = evaluar_expresion(condicion, ambito, store, declaraciones)?;
+            let cond_val = evaluar_expresion(condicion, ambito, almacen, declaraciones)?;
             if cond_val.es_verdadero() {
-                evaluar_bloque(cuerpo, ambito, store, declaraciones)
+                evaluar_bloque(cuerpo, ambito, almacen, declaraciones)
             } else {
                 Ok(ValorGUI::Nulo)
             }
@@ -959,7 +960,7 @@ fn evaluar_declaracion(
 fn evaluar_expresion(
     expr: &Expresion,
     ambito: &mut Ambito,
-    store: &VariableStore,
+    almacen: &VariableAlmacen,
     declaraciones: &[Declaracion],
 ) -> Result<ValorGUI, String> {
     match expr {
@@ -975,14 +976,14 @@ fn evaluar_expresion(
             bloque_verdadero,
             bloque_falso,
         } => {
-            let cond = evaluar_expresion(condicion, ambito, store, declaraciones)?;
+            let cond = evaluar_expresion(condicion, ambito, almacen, declaraciones)?;
             let rama = if cond.es_verdadero() {
                 Some(bloque_verdadero)
             } else {
                 bloque_falso.as_ref()
             };
             match rama {
-                Some(bloque) => evaluar_bloque(bloque, ambito, store, declaraciones),
+                Some(bloque) => evaluar_bloque(bloque, ambito, almacen, declaraciones),
                 None => Ok(ValorGUI::Nulo),
             }
         }
@@ -990,7 +991,7 @@ fn evaluar_expresion(
         Expresion::Identificador { nombre, .. } => {
             if let Some(val) = ambito.obtener(nombre) {
                 Ok(val.clone())
-            } else if let Some(json_val) = store.get(nombre) {
+            } else if let Some(json_val) = almacen.obtener(nombre) {
                 Ok(ValorGUI::from_serde(&json_val))
             } else {
                 Err(format!("Variable '{}' no encontrada", nombre))
@@ -1002,8 +1003,8 @@ fn evaluar_expresion(
             operador,
             derecha,
         } => {
-            let izq = evaluar_expresion(izquierda, ambito, store, declaraciones)?;
-            let der = evaluar_expresion(derecha, ambito, store, declaraciones)?;
+            let izq = evaluar_expresion(izquierda, ambito, almacen, declaraciones)?;
+            let der = evaluar_expresion(derecha, ambito, almacen, declaraciones)?;
             evaluar_binaria(izq, operador, der)
         }
 
@@ -1011,7 +1012,7 @@ fn evaluar_expresion(
             operador,
             expr: inner,
         } => {
-            let val = evaluar_expresion(inner, ambito, store, declaraciones)?;
+            let val = evaluar_expresion(inner, ambito, almacen, declaraciones)?;
             match operador {
                 OperadorUnario::Negar => match val {
                     ValorGUI::Entero(n) => Ok(ValorGUI::Entero(-n)),
@@ -1025,27 +1026,27 @@ fn evaluar_expresion(
         Expresion::LlamadaFuncion { nombre, argumentos } => {
             let mut args = Vec::new();
             for arg in argumentos {
-                args.push(evaluar_expresion(arg, ambito, store, declaraciones)?);
+                args.push(evaluar_expresion(arg, ambito, almacen, declaraciones)?);
             }
-            ejecutar_funcion(nombre, &args, declaraciones, store)
+            ejecutar_funcion(nombre, &args, declaraciones, almacen)
         }
 
         Expresion::AccesoMiembro { objeto, miembro } => {
-            let obj = evaluar_expresion(objeto, ambito, store, declaraciones)?;
-            let key = format!("{}_{}", obj.to_display(), miembro);
-            if let Some(json_val) = store.get(&key) {
+            let obj = evaluar_expresion(objeto, ambito, almacen, declaraciones)?;
+            let clave = format!("{}_{}", obj.to_display(), miembro);
+            if let Some(json_val) = almacen.obtener(&clave) {
                 Ok(ValorGUI::from_serde(&json_val))
             } else {
                 Ok(ValorGUI::Nulo)
             }
         }
 
-        Expresion::Grupo(inner) => evaluar_expresion(inner, ambito, store, declaraciones),
+        Expresion::Grupo(inner) => evaluar_expresion(inner, ambito, almacen, declaraciones),
 
         Expresion::Asignacion { variable, valor } => {
-            let val = evaluar_expresion(valor, ambito, store, declaraciones)?;
+            let val = evaluar_expresion(valor, ambito, almacen, declaraciones)?;
             ambito.asignar(variable.clone(), val.clone());
-            store.set(variable, val.to_json_value());
+            almacen.fijar(variable, val.to_json_valor());
             Ok(val)
         }
 
@@ -1058,11 +1059,11 @@ fn evaluar_expresion(
             valor,
         } => {
             if let Expresion::Identificador { nombre, .. } = objetivo.as_ref() {
-                let actual = evaluar_expresion(objetivo, ambito, store, declaraciones)?;
-                let incremento = evaluar_expresion(valor, ambito, store, declaraciones)?;
+                let actual = evaluar_expresion(objetivo, ambito, almacen, declaraciones)?;
+                let incremento = evaluar_expresion(valor, ambito, almacen, declaraciones)?;
                 let nuevo = evaluar_binaria(actual, operador, incremento)?;
                 ambito.asignar(nombre.clone(), nuevo.clone());
-                store.set(nombre, nuevo.to_json_value());
+                almacen.fijar(nombre, nuevo.to_json_valor());
                 Ok(nuevo)
             } else {
                 Err(
@@ -1075,43 +1076,43 @@ fn evaluar_expresion(
         Expresion::Arreglo(elementos) => {
             let mut values = Vec::new();
             for elem in elementos {
-                values.push(evaluar_expresion(elem, ambito, store, declaraciones)?);
+                values.push(evaluar_expresion(elem, ambito, almacen, declaraciones)?);
             }
             let json_arr: Vec<serde_json::Value> =
-                values.iter().map(|v| v.to_json_value()).collect();
+                values.iter().map(|v| v.to_json_valor()).collect();
             let json_str = serde_json::to_string(&json_arr)
                 .map_err(|e| format!("Error serializando array: {}", e))?;
             Ok(ValorGUI::Texto(json_str))
         }
 
         Expresion::Mapa(pares) => {
-            let mut map = serde_json::Map::new();
+            let mut mapa = serde_json::Map::new();
             for (k, v) in pares {
-                let key_val = evaluar_expresion(k, ambito, store, declaraciones)?;
-                let val = evaluar_expresion(v, ambito, store, declaraciones)?;
-                map.insert(key_val.to_display(), val.to_json_value());
+                let clave_val = evaluar_expresion(k, ambito, almacen, declaraciones)?;
+                let val = evaluar_expresion(v, ambito, almacen, declaraciones)?;
+                mapa.insert(clave_val.to_display(), val.to_json_valor());
             }
-            let json_str = serde_json::to_string(&serde_json::Value::Object(map))
+            let json_str = serde_json::to_string(&serde_json::Value::Object(mapa))
                 .map_err(|e| format!("Error serializando mapa: {}", e))?;
             Ok(ValorGUI::Texto(json_str))
         }
 
-        Expresion::Ok(inner) => evaluar_expresion(inner, ambito, store, declaraciones),
+        Expresion::Ok(inner) => evaluar_expresion(inner, ambito, almacen, declaraciones),
 
         Expresion::Error(inner) => {
-            let val = evaluar_expresion(inner, ambito, store, declaraciones)?;
+            let val = evaluar_expresion(inner, ambito, almacen, declaraciones)?;
             Err(format!("Error: {}", val.to_display()))
         }
 
-        Expresion::Algo(inner) => evaluar_expresion(inner, ambito, store, declaraciones),
+        Expresion::Algo(inner) => evaluar_expresion(inner, ambito, almacen, declaraciones),
 
         Expresion::Referencia { expr: inner, .. } => {
-            evaluar_expresion(inner, ambito, store, declaraciones)
+            evaluar_expresion(inner, ambito, almacen, declaraciones)
         }
 
         Expresion::Index { objeto, indice } => {
-            let obj = evaluar_expresion(objeto, ambito, store, declaraciones)?;
-            let idx = evaluar_expresion(indice, ambito, store, declaraciones)?;
+            let obj = evaluar_expresion(objeto, ambito, almacen, declaraciones)?;
+            let idx = evaluar_expresion(indice, ambito, almacen, declaraciones)?;
             let idx_num = match idx {
                 ValorGUI::Entero(n) => n as usize,
                 _ => return Err("Índice debe ser un entero".to_string()),
@@ -1139,7 +1140,7 @@ fn evaluar_expresion(
         Expresion::CanalNuevo(_) => Err("Canales no soportados en WASM GUI".to_string()),
         Expresion::Seleccionar { .. } => Err("Seleccionar no soportado en WASM GUI".to_string()),
         Expresion::Try(inner) => {
-            let val = evaluar_expresion(inner, ambito, store, declaraciones)?;
+            let val = evaluar_expresion(inner, ambito, almacen, declaraciones)?;
             if matches!(val, ValorGUI::Nulo) {
                 Err("Error propagado?".to_string())
             } else {
@@ -1147,7 +1148,7 @@ fn evaluar_expresion(
             }
         }
         Expresion::Resultado => Ok(ValorGUI::Nulo),
-        Expresion::Anterior(inner) => evaluar_expresion(inner, ambito, store, declaraciones),
+        Expresion::Anterior(inner) => evaluar_expresion(inner, ambito, almacen, declaraciones),
 
         // No implementados
         Expresion::Instanciacion { .. } => {
@@ -1155,23 +1156,23 @@ fn evaluar_expresion(
         }
         Expresion::LiteralExacto(_, _) => Err("Literal exacto no soportado".to_string()),
         Expresion::AsignacionCampo { .. } => Err("Asignación de campo no soportada".to_string()),
-        Expresion::ArraySet { .. } => Err("ArraySet no soportado".to_string()),
+        Expresion::ArregloFijar { .. } => Err("ArraySet no soportado".to_string()),
         Expresion::Coincidir { .. } => Err("Match no soportado en WASM GUI".to_string()),
         Expresion::Ternario {
             condicion,
             si_verdadero,
             si_falso,
         } => {
-            let cond = evaluar_expresion(condicion, ambito, store, declaraciones)?;
+            let cond = evaluar_expresion(condicion, ambito, almacen, declaraciones)?;
             let b = match &cond {
                 ValorGUI::Booleano(b) => *b,
                 ValorGUI::Entero(n) => *n != 0,
                 _ => false,
             };
             if b {
-                evaluar_expresion(si_verdadero, ambito, store, declaraciones)
+                evaluar_expresion(si_verdadero, ambito, almacen, declaraciones)
             } else {
-                evaluar_expresion(si_falso, ambito, store, declaraciones)
+                evaluar_expresion(si_falso, ambito, almacen, declaraciones)
             }
         }
         Expresion::LlamadaMetodo { .. } => Ok(ValorGUI::Nulo),
@@ -1288,7 +1289,7 @@ fn dividir(a: ValorGUI, b: ValorGUI) -> ValorGUI {
 fn valor_variable(
     expr: &Expresion,
     ambito: &mut Ambito,
-    store: &VariableStore,
+    almacen: &VariableAlmacen,
     declaraciones: &[Declaracion],
 ) -> ValorGUI {
     match expr {
@@ -1297,22 +1298,22 @@ fn valor_variable(
         Expresion::LiteralTexto(s) => ValorGUI::Texto(s.clone()),
         Expresion::LiteralBooleano(b) => ValorGUI::Booleano(*b),
         Expresion::LiteralNulo => ValorGUI::Nulo,
-        _ => evaluar_expresion(expr, ambito, store, declaraciones).unwrap_or(ValorGUI::Nulo),
+        _ => evaluar_expresion(expr, ambito, almacen, declaraciones).unwrap_or(ValorGUI::Nulo),
     }
 }
 
-fn inicializar_estado(declaraciones: &[Declaracion], store: &VariableStore) {
-    let mut ambito = Ambito::new();
+fn inicializar_estado(declaraciones: &[Declaracion], almacen: &VariableAlmacen) {
+    let mut ambito = Ambito::nuevo();
 
     // Variables globales (top-level): los callbacks las ven a través del store.
     for decl in declaraciones {
         if let Declaracion::Variable { nombre, valor, .. } = decl {
             let val = match valor {
-                Some(expr) => valor_variable(expr, &mut ambito, store, declaraciones),
+                Some(expr) => valor_variable(expr, &mut ambito, almacen, declaraciones),
                 None => ValorGUI::Nulo,
             };
             ambito.asignar(nombre.clone(), val.clone());
-            store.set(nombre, val.to_json_value());
+            almacen.fijar(nombre, val.to_json_valor());
         }
     }
 
@@ -1323,11 +1324,11 @@ fn inicializar_estado(declaraciones: &[Declaracion], store: &VariableStore) {
                 for d in cuerpo {
                     if let Declaracion::Variable { nombre, valor, .. } = d {
                         let val = match valor {
-                            Some(expr) => valor_variable(expr, &mut ambito, store, declaraciones),
+                            Some(expr) => valor_variable(expr, &mut ambito, almacen, declaraciones),
                             None => ValorGUI::Nulo,
                         };
                         ambito.asignar(nombre.clone(), val.clone());
-                        store.set(nombre, val.to_json_value());
+                        almacen.fijar(nombre, val.to_json_valor());
                     }
                 }
                 return;
@@ -1360,8 +1361,12 @@ fn procesar_click(x: f64, y: f64, canvas_id: &str) {
                         );
                         // Ejecutar la función callback
                         let args: Vec<ValorGUI> = Vec::new();
-                        match ejecutar_funcion(callback, &args, &state.declaraciones, &state.store)
-                        {
+                        match ejecutar_funcion(
+                            callback,
+                            &args,
+                            &state.declaraciones,
+                            &state.almacen,
+                        ) {
                             Ok(_) => {
                                 web_sys::console::log_1(
                                     &format!("Callback '{}' ejecutado OK", callback).into(),
@@ -1487,19 +1492,19 @@ pub fn renderizar(canvas_id: &str, codigo: &str) -> String {
     match forja::transpilar_a_rust_con_ast(codigo) {
         Ok((declaraciones, _rust_code)) => {
             // Almacenar estado global
-            let store = VariableStore::new();
+            let almacen = VariableAlmacen::nuevo();
 
             // Inicializar variables desde la función main
-            inicializar_estado(&declaraciones, &store);
+            inicializar_estado(&declaraciones, &almacen);
 
             // Extraer layout
             let layout = extraer_layout(&declaraciones);
 
             // Guardar estado y luego renderizar (dos pasos para evitar borrow conflicts)
-            let store_clone = store.clone();
+            let almacen_clonar = almacen.clone();
             APP_STATE.with(|state| {
                 let mut s = state.borrow_mut();
-                s.store = store_clone;
+                s.almacen = almacen_clonar;
                 s.declaraciones = declaraciones;
                 s.hit_areas.clear();
                 s.canvas_ancho = ancho;
@@ -1519,7 +1524,7 @@ pub fn renderizar(canvas_id: &str, codigo: &str) -> String {
                         10.0,
                         ancho - 20.0,
                         &mut areas_local,
-                        &s.store,
+                        &s.almacen,
                     );
                     // Devolver áreas para almacenar
                     drop(s);
@@ -1602,7 +1607,7 @@ pub fn rerenderizar(canvas_id: &str) -> String {
                 10.0,
                 ancho - 20.0,
                 &mut areas_local,
-                &s.store,
+                &s.almacen,
             );
             drop(s);
             let mut s = state.borrow_mut();
