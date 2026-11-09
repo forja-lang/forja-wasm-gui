@@ -1,6 +1,6 @@
 [package]
 name = "forja-wasm-gui"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2021"
 description = "Forja WASM GUI Runtime — renderiza interfaces Forja en un <canvas> HTML5"
 authors = ["forja-lang"]
