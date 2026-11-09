@@ -107,7 +107,7 @@ pub enum Layout {
         children: Vec<Layout>,
         gap: f64,
     },
-    ZStack(Vec<Layout>),
+    PilaZ(Vec<Layout>),
     Label {
         texto: String,
     },
@@ -118,7 +118,7 @@ pub enum Layout {
         texto: String,
         callback: String,
     },
-    TextInput {
+    EntradaTexto {
         variable: String,
         placeholder: String,
     },
@@ -304,7 +304,7 @@ fn renderizar_layout(
             (cx - x, max_alto.max(40.0))
         }
 
-        Layout::ZStack(children) => {
+        Layout::PilaZ(children) => {
             let mut max_ancho: f64 = 0.0;
             let mut max_alto: f64 = 0.0;
             for hijo in children {
@@ -336,7 +336,7 @@ fn renderizar_layout(
             layout.clone(),
         ),
 
-        Layout::TextInput {
+        Layout::EntradaTexto {
             variable,
             placeholder,
         } => renderizar_texto_entrada(
@@ -547,11 +547,11 @@ fn estimar_ancho(layout: &Layout, _default_ancho: f64) -> f64 {
         }
         Layout::VariableLabel { .. } => 100.0,
         Layout::Button { texto, .. } => (texto.len() as f64 * 9.0 + 32.0).clamp(80.0, 200.0),
-        Layout::TextInput { .. } => 150.0,
+        Layout::EntradaTexto { .. } => 150.0,
         Layout::Spacer(tam) => *tam,
         Layout::Column { .. } => _default_ancho,
         Layout::Row { .. } => _default_ancho,
-        Layout::ZStack { .. } => _default_ancho,
+        Layout::PilaZ { .. } => _default_ancho,
         Layout::Unimplemented(_) => _default_ancho,
     }
 }
@@ -607,7 +607,7 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                 }
                 "pila" | "gui_pila" | "zstack" | "ZStack" => {
                     let children = procesar_args(argumentos);
-                    Some(Layout::ZStack(children))
+                    Some(Layout::PilaZ(children))
                 }
 
                 // Labels / Texto
@@ -681,7 +681,7 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                             _ => String::new(),
                         })
                         .unwrap_or_default();
-                    Some(Layout::TextInput {
+                    Some(Layout::EntradaTexto {
                         variable,
                         placeholder,
                     })
@@ -1380,7 +1380,7 @@ fn procesar_click(x: f64, y: f64, canvas_id: &str) {
                             }
                         }
                     }
-                    Layout::TextInput { variable, .. } => {
+                    Layout::EntradaTexto { variable, .. } => {
                         // Para TextInput, mostrar prompt en consola por ahora
                         web_sys::console::log_1(
                             &format!("Click en TextInput '{}'", variable).into(),
