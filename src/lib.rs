@@ -172,6 +172,12 @@ pub enum Layout {
         hijos: Vec<Layout>,
         abierto: bool,
     },
+    /// Lista paginada (sólo la página actual existe en el DOM).
+    ListaPaginada {
+        variable: String,
+        por_pagina: usize,
+        items: Vec<Layout>,
+    },
     /// Barra de progreso (accesible).
     Progreso {
         valor: f64,
@@ -545,6 +551,22 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                         etiqueta,
                         por_defecto,
                         opciones,
+                    })
+                }
+                "lista_paginada" | "paginada" | "paged_list" => {
+                    let variable = match argumentos.first() {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let por_pagina = match argumentos.get(1) {
+                        Some(Expresion::LiteralNumero(n)) => (*n).max(1) as usize,
+                        _ => 10,
+                    };
+                    let items = argumentos.iter().skip(2).filter_map(expr_a_layout).collect();
+                    Some(Layout::ListaPaginada {
+                        variable,
+                        por_pagina,
+                        items,
                     })
                 }
                 "progreso" | "progress" | "Progreso" => {
@@ -1442,6 +1464,16 @@ fn layout_a_nodos(layout: &Layout) -> Vec<NodoDom> {
                 })
                 .collect(),
         }],
+        Layout::ListaPaginada {
+            variable,
+            por_pagina,
+            items,
+        } => vec![NodoDom::ListaPaginada {
+            variable: variable.clone(),
+            por_pagina: *por_pagina,
+            items: items.iter().flat_map(layout_a_nodos).collect(),
+            clase: String::new(),
+        }],
         Layout::Progreso {
             valor,
             maximo,
@@ -1769,6 +1801,31 @@ fn enganchar_dom() {
         // Convenciones de interfaz que no necesitan una función Forja:
         //   tab:<variable>:<valor>  → cambia la pestaña activa
         //   abrir:<id> / cerrar:<id> → diálogo nativo
+        // Paginación: cambia la página y repinta (sólo existe la página actual).
+        if let Some(resto) = accion.strip_prefix("pag:") {
+            if let Some((variable, delta)) = resto.rsplit_once(':') {
+                let paso: i64 = delta.parse().unwrap_or(0);
+                let actual: i64 = DOM_STATE.with(|celda| {
+                    celda
+                        .borrow()
+                        .estado
+                        .obtener(variable)
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(1)
+                });
+                let total = total_paginas_de(variable);
+                let nueva = (actual + paso).clamp(1, total.max(1));
+                DOM_STATE.with(|celda| {
+                    let mut estado_dom = celda.borrow_mut();
+                    estado_dom.estado.fijar(variable, nueva.to_string());
+                    estado_dom
+                        .almacen
+                        .fijar(variable, serde_json::Value::from(nueva));
+                });
+                repintar_dom();
+            }
+            return;
+        }
         // Navegación por URL: el hash es el historial (atrás/adelante funcionan).
         if let Some(ruta_hash) = accion.strip_prefix("ir:") {
             if let Some(ventana) = web_sys::window() {
@@ -1990,6 +2047,21 @@ fn enganchar_dom() {
             .add_event_listener_with_callback("popstate", al_volver.as_ref().unchecked_ref());
     }
     al_volver.forget();
+}
+
+/// Total de páginas del paginador de esa variable (lo deja el render en el DOM).
+fn total_paginas_de(variable: &str) -> i64 {
+    let Some(documento) = web_sys::window().and_then(|w| w.document()) else {
+        return 1;
+    };
+    let selector = format!("[data-fg-lista-pag=\"{variable}\"] .fg-paginador-estado");
+    documento
+        .query_selector(&selector)
+        .ok()
+        .flatten()
+        .and_then(|estado_pag| estado_pag.get_attribute("data-fg-paginas"))
+        .and_then(|paginas| paginas.parse::<i64>().ok())
+        .unwrap_or(1)
 }
 
 /// Aplica una ruta (`#/demo/detalle`) al estado y repinta.
