@@ -111,6 +111,23 @@ impl ValorGUI {
 // LAYOUT (representación intermedia de UI)
 // ═══════════════════════════════════════════════════════════════════
 
+/// Tono de una insignia (el color lo pone el CSS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TonoInsignia {
+    Neutro,
+    Exito,
+    Aviso,
+    Error,
+}
+
+/// Gravedad de un aviso: define el `role` accesible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gravedad {
+    Informacion,
+    Advertencia,
+    Error,
+}
+
 #[derive(Debug, Clone)]
 pub enum Layout {
     Column {
@@ -155,6 +172,23 @@ pub enum Layout {
         titulo: String,
         hijos: Vec<Layout>,
         abierto: bool,
+    },
+    /// Texto plano (celdas de tabla): se escapa, sin envolver en `<p>`.
+    Texto(String),
+    /// Tabla: cabeceras + filas de celdas.
+    Tabla {
+        cabeceras: Vec<String>,
+        filas: Vec<Vec<Layout>>,
+    },
+    /// Insignia/chip de estado.
+    Insignia {
+        texto: String,
+        tono: TonoInsignia,
+    },
+    /// Aviso con gravedad (define el `role`).
+    Aviso {
+        texto: String,
+        gravedad: Gravedad,
     },
     /// Diálogo nativo (`abrir:<id>` / `cerrar:<id>`).
     Dialogo {
@@ -427,7 +461,11 @@ fn renderizar_layout(
         Layout::Pestanas { .. }
         | Layout::ListaSeleccion { .. }
         | Layout::Plegable { .. }
-        | Layout::Dialogo { .. } => (ancho_disponible, 0.0),
+        | Layout::Dialogo { .. }
+        | Layout::Texto(_)
+        | Layout::Tabla { .. }
+        | Layout::Insignia { .. }
+        | Layout::Aviso { .. } => (ancho_disponible, 0.0),
 
         Layout::Unimplemented(desc) => {
             ctx.set_fill_style_str(COLOR_ERROR);
@@ -621,6 +659,10 @@ fn estimar_ancho(layout: &Layout, _default_ancho: f64) -> f64 {
         Layout::PilaZ { .. } => _default_ancho,
         Layout::Pestanas { .. } => _default_ancho,
         Layout::ListaSeleccion { .. } => _default_ancho,
+        Layout::Tabla { .. } => _default_ancho,
+        Layout::Texto(texto) => (texto.len() as f64 * 8.0).min(200.0),
+        Layout::Insignia { .. } => 90.0,
+        Layout::Aviso { .. } => _default_ancho,
         Layout::Plegable { .. } => _default_ancho,
         Layout::Dialogo { .. } => _default_ancho,
         Layout::Unimplemented(_) => _default_ancho,
@@ -663,6 +705,26 @@ fn extraer_layout(decls: &[Declaracion]) -> Layout {
 }
 
 /// Convierte una expresión del AST a un Layout
+/// Un renglón de tabla: `renglon(celda1, celda2, ...)`.
+fn expr_a_renglon(expr: &Expresion) -> Option<Vec<Layout>> {
+    let Expresion::LlamadaFuncion { nombre, argumentos } = expr else {
+        return None;
+    };
+    if nombre != "renglon" && nombre != "row" && nombre != "tr" {
+        return None;
+    }
+    Some(
+        argumentos
+            .iter()
+            .map(|argumento| match argumento {
+                Expresion::LiteralTexto(texto) => Some(Layout::Texto(texto.clone())),
+                otro => expr_a_layout(otro),
+            })
+            .collect::<Option<Vec<Layout>>>()
+            .unwrap_or_default(),
+    )
+}
+
 /// Una opción: `opcion("valor", "Etiqueta")`.
 fn expr_a_opcion(expr: &Expresion) -> Option<(String, String)> {
     let Expresion::LlamadaFuncion { nombre, argumentos } = expr else {
@@ -844,6 +906,49 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                         por_defecto,
                         opciones,
                     })
+                }
+                "tabla" | "table" | "Table" => {
+                    let mut cabeceras: Vec<String> = Vec::new();
+                    let mut filas: Vec<Vec<Layout>> = Vec::new();
+                    for argumento in argumentos {
+                        if let Some(celdas) = expr_a_renglon(argumento) {
+                            filas.push(celdas);
+                        } else if let Expresion::LiteralTexto(texto) = argumento {
+                            cabeceras.push(texto.clone());
+                        }
+                    }
+                    Some(Layout::Tabla { cabeceras, filas })
+                }
+                "insignia" | "chip" | "badge" | "Insignia" => {
+                    let texto = match argumentos.first() {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let tono = match argumentos.get(1) {
+                        Some(Expresion::LiteralTexto(t)) => match t.as_str() {
+                            "exito" | "éxito" => TonoInsignia::Exito,
+                            "aviso" => TonoInsignia::Aviso,
+                            "error" => TonoInsignia::Error,
+                            _ => TonoInsignia::Neutro,
+                        },
+                        _ => TonoInsignia::Neutro,
+                    };
+                    Some(Layout::Insignia { texto, tono })
+                }
+                "aviso" | "alerta" | "notice" | "Aviso" => {
+                    let texto = match argumentos.first() {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let gravedad = match argumentos.get(1) {
+                        Some(Expresion::LiteralTexto(g)) => match g.as_str() {
+                            "advertencia" => Gravedad::Advertencia,
+                            "error" => Gravedad::Error,
+                            _ => Gravedad::Informacion,
+                        },
+                        _ => Gravedad::Informacion,
+                    };
+                    Some(Layout::Aviso { texto, gravedad })
                 }
                 "plegable" | "detalles" | "details" | "Plegable" => {
                     let titulo = match argumentos.first() {
@@ -1874,6 +1979,32 @@ fn layout_a_nodos(layout: &Layout) -> Vec<NodoDom> {
                     )
                 })
                 .collect(),
+        }],
+        Layout::Texto(texto) => vec![NodoDom::Texto(texto.clone())],
+        Layout::Tabla { cabeceras, filas } => vec![NodoDom::Tabla {
+            cabeceras: cabeceras.clone(),
+            filas: filas
+                .iter()
+                .map(|fila| fila.iter().flat_map(layout_a_nodos).collect())
+                .collect(),
+            orden: None,
+        }],
+        Layout::Insignia { texto, tono } => vec![NodoDom::Insignia {
+            texto: texto.clone(),
+            tono: match tono {
+                TonoInsignia::Neutro => forja_gui_dom::Tono::Neutro,
+                TonoInsignia::Exito => forja_gui_dom::Tono::Exito,
+                TonoInsignia::Aviso => forja_gui_dom::Tono::Aviso,
+                TonoInsignia::Error => forja_gui_dom::Tono::Error,
+            },
+        }],
+        Layout::Aviso { texto, gravedad } => vec![NodoDom::Aviso {
+            texto: texto.clone(),
+            nivel: match gravedad {
+                Gravedad::Informacion => forja_gui_dom::NivelAviso::Informacion,
+                Gravedad::Advertencia => forja_gui_dom::NivelAviso::Advertencia,
+                Gravedad::Error => forja_gui_dom::NivelAviso::Error,
+            },
         }],
         Layout::ListaSeleccion {
             variable,
