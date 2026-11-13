@@ -175,10 +175,12 @@ pub enum Layout {
     },
     /// Texto plano (celdas de tabla): se escapa, sin envolver en `<p>`.
     Texto(String),
-    /// Tabla: cabeceras + filas de celdas.
+    /// Tabla: cabeceras + filas de celdas. `ordenable` hace que las cabeceras
+    /// sean botones (`orden:<columna>`) y que el runtime ordene las filas.
     Tabla {
         cabeceras: Vec<String>,
         filas: Vec<Vec<Layout>>,
+        ordenable: bool,
     },
     /// Insignia/chip de estado.
     Insignia {
@@ -907,7 +909,8 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                         opciones,
                     })
                 }
-                "tabla" | "table" | "Table" => {
+                "tabla" | "table" | "Table" | "tabla_ordenable" | "table_sortable" => {
+                    let ordenable = nombre == "tabla_ordenable" || nombre == "table_sortable";
                     let mut cabeceras: Vec<String> = Vec::new();
                     let mut filas: Vec<Vec<Layout>> = Vec::new();
                     for argumento in argumentos {
@@ -917,7 +920,11 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                             cabeceras.push(texto.clone());
                         }
                     }
-                    Some(Layout::Tabla { cabeceras, filas })
+                    Some(Layout::Tabla {
+                        cabeceras,
+                        filas,
+                        ordenable,
+                    })
                 }
                 "insignia" | "chip" | "badge" | "Insignia" => {
                     let texto = match argumentos.first() {
@@ -1981,13 +1988,23 @@ fn layout_a_nodos(layout: &Layout) -> Vec<NodoDom> {
                 .collect(),
         }],
         Layout::Texto(texto) => vec![NodoDom::Texto(texto.clone())],
-        Layout::Tabla { cabeceras, filas } => vec![NodoDom::Tabla {
+        Layout::Tabla {
+            cabeceras,
+            filas,
+            ordenable,
+        } => vec![NodoDom::Tabla {
             cabeceras: cabeceras.clone(),
             filas: filas
                 .iter()
                 .map(|fila| fila.iter().flat_map(layout_a_nodos).collect())
                 .collect(),
-            orden: None,
+            orden: if *ordenable {
+                cabeceras
+                    .first()
+                    .map(|primera| (primera.clone(), forja_gui_dom::Orden::Ascendente))
+            } else {
+                None
+            },
         }],
         Layout::Insignia { texto, tono } => vec![NodoDom::Insignia {
             texto: texto.clone(),
@@ -2255,6 +2272,14 @@ fn enganchar_dom() {
         // Convenciones de interfaz que no necesitan una función Forja:
         //   tab:<variable>:<valor>  → cambia la pestaña activa
         //   abrir:<id> / cerrar:<id> → diálogo nativo
+        if let Some(columna) = accion.strip_prefix("orden:") {
+            if let Some(target) = evento.target() {
+                if let Ok(elemento) = target.dyn_into::<web_sys::Element>() {
+                    ordenar_tabla(&elemento, columna);
+                }
+            }
+            return;
+        }
         if let Some(resto) = accion
             .strip_prefix("tab:")
             .or_else(|| accion.strip_prefix("sel:"))
@@ -2424,6 +2449,70 @@ fn enganchar_dom() {
     let _ =
         elemento.add_event_listener_with_callback("keydown", al_teclear.as_ref().unchecked_ref());
     al_teclear.forget();
+}
+
+/// Ordena la tabla del botón clickeado por la columna de su cabecera.
+///
+/// No necesita lógica de la app: compara el texto de las celdas del `tbody` y
+/// alterna ascendente/descendente, dejando `aria-sort` en las cabeceras.
+fn ordenar_tabla(boton: &web_sys::Element, columna: &str) {
+    let Some(tabla) = boton.closest("table").ok().flatten() else {
+        return;
+    };
+    let Ok(cabeceras) = tabla.query_selector_all("thead th") else {
+        return;
+    };
+    let mut indice: Option<u32> = None;
+    let mut ascendente = true;
+    for i in 0..cabeceras.length() {
+        let Some(nodo) = cabeceras.get(i) else { continue };
+        let Ok(th) = nodo.dyn_into::<web_sys::Element>() else {
+            continue;
+        };
+        let es_la_columna = th
+            .text_content()
+            .map(|t| t.trim() == columna)
+            .unwrap_or(false);
+        if es_la_columna {
+            indice = Some(i);
+            ascendente = th.get_attribute("aria-sort").as_deref() != Some("ascending");
+            let _ = th.set_attribute("aria-sort", if ascendente { "ascending" } else { "descending" });
+        } else {
+            let _ = th.set_attribute("aria-sort", "none");
+        }
+    }
+    let Some(indice) = indice else { return };
+
+    let Ok(cuerpo) = tabla.query_selector("tbody") else {
+        return;
+    };
+    let Some(cuerpo) = cuerpo else { return };
+    let Ok(filas) = cuerpo.query_selector_all("tr") else {
+        return;
+    };
+
+    let mut datos: Vec<(String, web_sys::Element)> = Vec::new();
+    for i in 0..filas.length() {
+        let Some(nodo) = filas.get(i) else { continue };
+        let Ok(fila) = nodo.dyn_into::<web_sys::Element>() else {
+            continue;
+        };
+        let texto = fila
+            .query_selector_all("td")
+            .ok()
+            .and_then(|celdas| celdas.get(indice))
+            .and_then(|celda| celda.text_content())
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        datos.push((texto, fila));
+    }
+    datos.sort_by(|a, b| if ascendente { a.0.cmp(&b.0) } else { b.0.cmp(&a.0) });
+
+    // Reinsertar en orden: `append_child` mueve los nodos existentes.
+    for (_, fila) in datos {
+        let _ = cuerpo.append_child(&fila);
+    }
 }
 
 /// Busca un `<dialog id="fg-dialogo-<id>">`.
