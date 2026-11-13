@@ -1,6 +1,6 @@
 [package]
 name = "forja-wasm-gui"
-version = "0.10.2"
+version = "0.11.0"
 edition = "2021"
 description = "Forja WASM GUI Runtime — renderiza interfaces Forja en un <canvas> HTML5"
 authors = ["forja-lang"]
@@ -30,8 +30,14 @@ web-sys = { version = "0.3", features = [
     "EventListener",
     "Window",
     "HtmlInputElement",
+    "HtmlDialogElement",
+    "Node",
+    "NodeList",
+    "HtmlSelectElement",
+    "HtmlTextAreaElement",
 ] }
-forja = { path = "../../compiler/forja" }
+forja-syntax = { path = "../../compiler/forja-syntax" }
+forja-gui-dom = { path = "../gui-dom" }
 serde_json = "1"
 
 [features]

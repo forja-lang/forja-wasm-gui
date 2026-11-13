@@ -4,19 +4,33 @@
 // No depende de winit, Xilem, Masonry ni Vello.
 //
 // Arquitectura:
-//   - Compila código Forja a AST vía forja::transpilar_a_rust_con_ast()
+//   - Compila código Forja a AST con `forja-syntax` (lexer + parser)
 //   - Convierte AST → Layout simplificado
 //   - Renderiza Layout en Canvas 2D
 //   - Maneja eventos (click) con hit-testing sobre rectángulos de widgets
 //   - Ejecuta callbacks Forja mediante evaluador tree-walking simplificado
 
-use forja::ast::{Declaracion, Expresion, Operador, OperadorUnario};
+use forja_syntax::ast::{Declaracion, Expresion, Operador, OperadorUnario};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+
+/// Compila a AST usando sólo el frontend (`forja-syntax`): lexer + parser.
+///
+/// Antes se usaba el compilador completo, que en wasm arrastra VM, bytecode,
+/// IR y codegen: el `.wasm` pesaba más y el arranque tardaba ~1 s de más.
+fn compilar_a_ast(codigo: &str) -> Result<Vec<Declaracion>, String> {
+    let mut lexer = forja_syntax::lexer::Lexer::nuevo(codigo);
+    let tokens = lexer.tokenize().map_err(|errores| errores[0].to_string())?;
+    let mut parser = forja_syntax::parser::Parser::nuevo(tokens);
+    parser
+        .parsear()
+        .map(|programa| programa.declaraciones)
+        .map_err(|errores| errores[0].to_string())
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // TIPOS DE VALOR
@@ -124,6 +138,31 @@ pub enum Layout {
     },
     Title(String),
     Spacer(f64),
+    /// Pestañas: la activa sale de `variable` (acción `tab:<variable>:<valor>`).
+    Pestanas {
+        variable: String,
+        items: Vec<(String, String, Vec<Layout>)>,
+    },
+    /// Lista de opciones con selección (acción `sel:<variable>:<valor>`).
+    ListaSeleccion {
+        variable: String,
+        etiqueta: String,
+        por_defecto: String,
+        opciones: Vec<(String, String)>,
+    },
+    /// Bloque plegable nativo.
+    Plegable {
+        titulo: String,
+        hijos: Vec<Layout>,
+        abierto: bool,
+    },
+    /// Diálogo nativo (`abrir:<id>` / `cerrar:<id>`).
+    Dialogo {
+        id: String,
+        titulo: String,
+        hijos: Vec<Layout>,
+        abierto: bool,
+    },
     /// Placeholder para layouts no implementados en Canvas
     Unimplemented(String),
 }
@@ -154,6 +193,28 @@ impl VariableAlmacen {
 
     pub fn contiene(&self, name: &str) -> bool {
         self.variables.borrow().contains_key(name)
+    }
+
+    /// Nombres de todas las variables guardadas.
+    pub fn nombres(&self) -> Vec<String> {
+        self.variables.borrow().keys().cloned().collect()
+    }
+
+    /// Todas las variables como (nombre, texto), para sembrar el `Estado` de
+    /// bindings. Copiar todo es más simple y robusto que adivinar desde el árbol
+    /// qué variables existen.
+    pub fn como_textos(&self) -> Vec<(String, String)> {
+        self.variables
+            .borrow()
+            .iter()
+            .map(|(nombre, valor)| {
+                let texto = match valor {
+                    serde_json::Value::String(s) => s.clone(),
+                    otro => otro.to_string(),
+                };
+                (nombre.clone(), texto)
+            })
+            .collect()
     }
 }
 
@@ -207,7 +268,7 @@ struct WidgetHitArea {
 
 struct AppState {
     almacen: VariableAlmacen,
-    declaraciones: Vec<forja::ast::Declaracion>,
+    declaraciones: Vec<Declaracion>,
     hit_areas: Vec<WidgetHitArea>,
     ultimo_layout: Option<Layout>,
     canvas_ancho: f64,
@@ -361,6 +422,12 @@ fn renderizar_layout(
         }
 
         Layout::Spacer(tam) => (ancho_disponible, *tam),
+
+        // Widgets sólo de DOM: en canvas no se dibujan (ruta legada).
+        Layout::Pestanas { .. }
+        | Layout::ListaSeleccion { .. }
+        | Layout::Plegable { .. }
+        | Layout::Dialogo { .. } => (ancho_disponible, 0.0),
 
         Layout::Unimplemented(desc) => {
             ctx.set_fill_style_str(COLOR_ERROR);
@@ -552,6 +619,10 @@ fn estimar_ancho(layout: &Layout, _default_ancho: f64) -> f64 {
         Layout::Column { .. } => _default_ancho,
         Layout::Row { .. } => _default_ancho,
         Layout::PilaZ { .. } => _default_ancho,
+        Layout::Pestanas { .. } => _default_ancho,
+        Layout::ListaSeleccion { .. } => _default_ancho,
+        Layout::Plegable { .. } => _default_ancho,
+        Layout::Dialogo { .. } => _default_ancho,
         Layout::Unimplemented(_) => _default_ancho,
     }
 }
@@ -592,6 +663,50 @@ fn extraer_layout(decls: &[Declaracion]) -> Layout {
 }
 
 /// Convierte una expresión del AST a un Layout
+/// Una opción: `opcion("valor", "Etiqueta")`.
+fn expr_a_opcion(expr: &Expresion) -> Option<(String, String)> {
+    let Expresion::LlamadaFuncion { nombre, argumentos } = expr else {
+        return None;
+    };
+    if nombre != "opcion" && nombre != "option" {
+        return None;
+    }
+    let valor = match argumentos.first() {
+        Some(Expresion::LiteralTexto(s)) => s.clone(),
+        _ => return None,
+    };
+    let etiqueta = match argumentos.get(1) {
+        Some(Expresion::LiteralTexto(s)) => s.clone(),
+        _ => valor.clone(),
+    };
+    Some((valor, etiqueta))
+}
+
+/// Una pestaña: `pestana("valor", "Etiqueta", hijos...)`.
+fn expr_a_pestana(expr: &Expresion) -> Option<(String, String, Vec<Layout>)> {
+    let Expresion::LlamadaFuncion { nombre, argumentos } = expr else {
+        return None;
+    };
+    if nombre != "pestana" && nombre != "tab" {
+        return None;
+    }
+    let valor = match argumentos.first() {
+        Some(Expresion::LiteralTexto(s)) => s.clone(),
+        _ => return None,
+    };
+    let etiqueta = match argumentos.get(1) {
+        Some(Expresion::LiteralTexto(s)) => s.clone(),
+        _ => valor.clone(),
+    };
+    let hijos = argumentos
+        .iter()
+        .skip(2)
+        .filter_map(expr_a_layout)
+        .collect();
+    Some((valor, etiqueta, hijos))
+}
+
+
 fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
     match expr {
         Expresion::LlamadaFuncion { nombre, argumentos } => {
@@ -688,6 +803,81 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                 }
 
                 // Spacer
+                "pestanas" | "tabs" | "Tabs" => {
+                    let variable = argumentos
+                        .first()
+                        .and_then(|a| match a {
+                            Expresion::LiteralTexto(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let mut items = Vec::new();
+                    for argumento in argumentos.iter().skip(1) {
+                        if let Some(item) = expr_a_pestana(argumento) {
+                            items.push(item);
+                        }
+                    }
+                    Some(Layout::Pestanas { variable, items })
+                }
+                "seleccion_lista" | "lista_seleccion" | "opciones" | "listbox" => {
+                    let variable = match argumentos.first() {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let etiqueta = match argumentos.get(1) {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let por_defecto = match argumentos.get(2) {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let mut opciones = Vec::new();
+                    for argumento in argumentos.iter().skip(3) {
+                        if let Some(opcion) = expr_a_opcion(argumento) {
+                            opciones.push(opcion);
+                        }
+                    }
+                    Some(Layout::ListaSeleccion {
+                        variable,
+                        etiqueta,
+                        por_defecto,
+                        opciones,
+                    })
+                }
+                "plegable" | "detalles" | "details" | "Plegable" => {
+                    let titulo = match argumentos.first() {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let abierto =
+                        matches!(argumentos.get(1), Some(Expresion::LiteralBooleano(true)));
+                    let hijos = argumentos.iter().skip(2).filter_map(expr_a_layout).collect();
+                    Some(Layout::Plegable {
+                        titulo,
+                        hijos,
+                        abierto,
+                    })
+                }
+                "dialogo" | "dialog" | "Dialogo" => {
+                    let id = match argumentos.first() {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let titulo = match argumentos.get(1) {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let abierto =
+                        matches!(argumentos.get(2), Some(Expresion::LiteralBooleano(true)));
+                    let hijos = argumentos.iter().skip(3).filter_map(expr_a_layout).collect();
+                    Some(Layout::Dialogo {
+                        id,
+                        titulo,
+                        hijos,
+                        abierto,
+                    })
+                }
                 "espacio" | "spacer" | "Spacer" => {
                     let tam = argumentos
                         .first()
@@ -744,6 +934,9 @@ fn extraer_callback(args: &[Expresion], index: usize) -> String {
                 _ => String::new(),
             },
             Expresion::Identificador { nombre: n, .. } => n.clone(),
+            // Un texto como acción permite usar convenciones del runtime
+            // (`"abrir:confirmar"`), no sólo funciones Forja.
+            Expresion::LiteralTexto(s) => s.clone(),
             _ => String::new(),
         })
         .unwrap_or_default()
@@ -1489,8 +1682,8 @@ pub fn renderizar(canvas_id: &str, codigo: &str) -> String {
     ctx.fill_rect(0.0, 0.0, ancho, alto);
 
     // Compilar código Forja
-    match forja::transpilar_a_rust_con_ast(codigo) {
-        Ok((declaraciones, _rust_code)) => {
+    match compilar_a_ast(codigo) {
+        Ok(declaraciones) => {
             // Almacenar estado global
             let almacen = VariableAlmacen::nuevo();
 
@@ -1538,17 +1731,12 @@ pub fn renderizar(canvas_id: &str, codigo: &str) -> String {
 
             "ok".to_string()
         }
-        Err(errors) => {
-            let msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        Err(error) => {
             // Mostrar error en canvas
             ctx.set_fill_style_str(COLOR_ERROR);
             ctx.set_font("14px sans-serif");
-            let mut ey = 30.0;
-            for msg in &msgs {
-                ctx.fill_text(msg, 10.0, ey).ok();
-                ey += 20.0;
-            }
-            format!("Error compilando: {}", msgs.join("; "))
+            ctx.fill_text(&error, 10.0, 30.0).ok();
+            format!("Error compilando: {error}")
         }
     }
 }
@@ -1616,4 +1804,584 @@ pub fn rerenderizar(canvas_id: &str) -> String {
     });
 
     "ok".to_string()
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RENDERIZADO DOM (reemplaza al canvas, Fase 4 del plan web)
+// ═══════════════════════════════════════════════════════════════════
+//
+// El canvas no da accesibilidad, ni formularios nativos, ni CSS, ni SEO. Acá el
+// mismo `Layout` se convierte en nodos DOM reales (`forja_gui_dom::Nodo`) y se
+// serializa a HTML: el navegador hace el layout, el foco, el scroll y el teclado.
+
+use forja_gui_dom::{Nodo as NodoDom, TipoEntrada, VarianteBoton};
+
+/// Traduce el árbol de layout de la GUI a nodos DOM (puro, sin browser).
+fn layout_a_nodos(layout: &Layout) -> Vec<NodoDom> {
+    match layout {
+        Layout::Column { children, .. } => vec![NodoDom::Contenedor {
+            hijos: children.iter().flat_map(layout_a_nodos).collect(),
+            clase: "fg-columna".to_string(),
+        }],
+        Layout::Row { children, .. } => vec![NodoDom::Contenedor {
+            hijos: children.iter().flat_map(layout_a_nodos).collect(),
+            clase: "fg-fila".to_string(),
+        }],
+        Layout::PilaZ(hijos) => vec![NodoDom::Contenedor {
+            hijos: hijos.iter().flat_map(layout_a_nodos).collect(),
+            clase: "fg-pila".to_string(),
+        }],
+        Layout::Label { texto } => vec![NodoDom::Parrafo(texto.clone())],
+        Layout::VariableLabel { variable } => vec![NodoDom::Variable(variable.clone())],
+        Layout::Button { texto, callback } => vec![NodoDom::Boton {
+            texto: texto.clone(),
+            accion: if callback.is_empty() {
+                format!("click:{}", texto.to_lowercase())
+            } else {
+                callback.clone()
+            },
+            variante: VarianteBoton::Primario,
+            deshabilitado: false,
+        }],
+        Layout::EntradaTexto {
+            variable,
+            placeholder,
+        } => vec![NodoDom::Entrada {
+            nombre: variable.clone(),
+            tipo: TipoEntrada::Texto,
+            valor: String::new(),
+            marcador: placeholder.clone(),
+            requerido: false,
+            error: None,
+        }],
+        Layout::Title(texto) => vec![NodoDom::Encabezado {
+            nivel: 1,
+            texto: texto.clone(),
+        }],
+        Layout::Spacer(_) => vec![NodoDom::Contenedor {
+            hijos: Vec::new(),
+            clase: "fg-espacio".to_string(),
+        }],
+        Layout::Pestanas { variable, items } => vec![NodoDom::Pestanas {
+            variable: variable.clone(),
+            items: items
+                .iter()
+                .map(|(valor, etiqueta, hijos)| {
+                    (
+                        valor.clone(),
+                        etiqueta.clone(),
+                        hijos.iter().flat_map(layout_a_nodos).collect(),
+                    )
+                })
+                .collect(),
+        }],
+        Layout::ListaSeleccion {
+            variable,
+            etiqueta,
+            por_defecto,
+            opciones,
+        } => vec![NodoDom::ListaSeleccion {
+            variable: variable.clone(),
+            etiqueta: etiqueta.clone(),
+            por_defecto: por_defecto.clone(),
+            opciones: opciones.clone(),
+        }],
+        Layout::Plegable {
+            titulo,
+            hijos,
+            abierto,
+        } => vec![NodoDom::Plegable {
+            titulo: titulo.clone(),
+            hijos: hijos.iter().flat_map(layout_a_nodos).collect(),
+            abierto: *abierto,
+        }],
+        Layout::Dialogo {
+            id,
+            titulo,
+            hijos,
+            abierto,
+        } => vec![NodoDom::Dialogo {
+            id: id.clone(),
+            titulo: titulo.clone(),
+            hijos: hijos.iter().flat_map(layout_a_nodos).collect(),
+            abierto: *abierto,
+        }],
+        Layout::Unimplemented(nombre) => vec![NodoDom::Contenedor {
+            hijos: vec![NodoDom::Texto(format!("[no implementado: {nombre}]"))],
+            clase: "fg-no-implementado".to_string(),
+        }],
+    }
+}
+
+thread_local! {
+    /// Estado del modo DOM: árbol compilado, variables y estado de bindings.
+    static DOM_STATE: RefCell<OpcionesDom> = RefCell::new(OpcionesDom::nuevo());
+}
+
+struct OpcionesDom {
+    declaraciones: Vec<Declaracion>,
+    almacen: VariableAlmacen,
+    estado: forja_gui_dom::Estado,
+    raiz: String,
+    /// Los listeners van a la raíz (que no se recrea) y se enganchan una sola
+    /// vez: si se re-engancharan en cada repintado, un clic dispararía N veces.
+    enganchado: bool,
+}
+
+impl OpcionesDom {
+    fn nuevo() -> Self {
+        OpcionesDom {
+            declaraciones: Vec::new(),
+            almacen: VariableAlmacen::nuevo(),
+            estado: forja_gui_dom::Estado::nuevo(),
+            raiz: String::new(),
+            enganchado: false,
+        }
+    }
+}
+
+/// Copia al `Estado` de bindings los valores que el programa tiene en su
+/// almacén. Es lo que hace que un callback que cambia una variable se vea.
+fn sincronizar_estado() {
+    DOM_STATE.with(|celda| {
+        let mut estado_dom = celda.borrow_mut();
+        for (nombre, texto) in estado_dom.almacen.como_textos() {
+            estado_dom.estado.fijar(&nombre, texto);
+        }
+    });
+}
+
+/// Vuelve a pintar el árbol con el estado actual y re-engancha los listeners.
+/// Actualiza el DOM existente con el estado actual, **sin recrear el árbol**.
+///
+/// `set_inner_html` de todo el árbol fuerza parseo de HTML, layout y paint
+/// completos (30-60 ms con esta pantalla) y genera basura que aparece como
+/// picos de GC. Acá se tocan sólo los nodos que dependen del estado.
+fn actualizar_dom() {
+    let (raiz_id, estado) = DOM_STATE.with(|celda| {
+        let estado_dom = celda.borrow();
+        (estado_dom.raiz.clone(), estado_dom.estado.clone())
+    });
+    let Some(documento) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(raiz) = documento.get_element_by_id(&raiz_id) else {
+        return;
+    };
+
+    // 1. Variables ligadas: inputs, textareas, selects y textos.
+    if let Ok(nodos) = raiz.query_selector_all("[data-fg-variable]") {
+        for indice in 0..nodos.length() {
+            let Some(nodo) = nodos.get(indice) else { continue };
+            let Ok(elemento) = nodo.dyn_into::<web_sys::Element>() else {
+                continue;
+            };
+            let Some(nombre) = elemento.get_attribute("data-fg-variable") else {
+                continue;
+            };
+            let etiqueta = elemento.tag_name().to_lowercase();
+            match etiqueta.as_str() {
+                "input" => {
+                    let Ok(entrada) = elemento.dyn_into::<web_sys::HtmlInputElement>() else {
+                        continue;
+                    };
+                    if entrada.type_() == "checkbox" {
+                        entrada.set_checked(estado.booleano(&nombre));
+                    } else {
+                        entrada.set_value(estado.obtener(&nombre).unwrap_or(""));
+                    }
+                }
+                "select" => {
+                    if let Ok(seleccion) = elemento.dyn_into::<web_sys::HtmlSelectElement>() {
+                        seleccion.set_value(estado.obtener(&nombre).unwrap_or(""));
+                    }
+                }
+                "textarea" => {
+                    if let Ok(area) = elemento.dyn_into::<web_sys::HtmlTextAreaElement>() {
+                        area.set_value(estado.obtener(&nombre).unwrap_or(""));
+                    }
+                }
+                _ => {
+                    elemento.set_text_content(estado.obtener(&nombre));
+                }
+            }
+        }
+    }
+
+    // 2. Pestañas y paneles: `aria-selected` y `hidden`.
+    if let Ok(pestanas) = raiz.query_selector_all("[role=tab]") {
+        for indice in 0..pestanas.length() {
+            let Some(nodo) = pestanas.get(indice) else { continue };
+            let Ok(pestana) = nodo.dyn_into::<web_sys::Element>() else {
+                continue;
+            };
+            let Some(accion) = pestana.get_attribute("data-fg-accion") else {
+                continue;
+            };
+            let Some(resto) = accion.strip_prefix("tab:") else {
+                continue;
+            };
+            let Some((variable, valor)) = resto.split_once(':') else {
+                continue;
+            };
+            let activa = estado.obtener(variable).unwrap_or("");
+            let _ = pestana.set_attribute("aria-selected", if activa == valor { "true" } else { "false" });
+        }
+    }
+    if let Ok(paneles) = raiz.query_selector_all("[data-fg-panel]") {
+        for indice in 0..paneles.length() {
+            let Some(nodo) = paneles.get(indice) else { continue };
+            let Ok(panel) = nodo.dyn_into::<web_sys::Element>() else {
+                continue;
+            };
+            let (Some(valor), Some(variable)) = (
+                panel.get_attribute("data-fg-panel"),
+                panel.get_attribute("data-fg-panel-var"),
+            ) else {
+                continue;
+            };
+            let activo = estado.obtener(&variable).unwrap_or("");
+            if activo == valor {
+                let _ = panel.remove_attribute("hidden");
+            } else {
+                let _ = panel.set_attribute("hidden", "");
+            }
+        }
+    }
+
+    // 3. Listas con selección: `aria-selected` por opción.
+    if let Ok(opciones) = raiz.query_selector_all("[role=option]") {
+        for indice in 0..opciones.length() {
+            let Some(nodo) = opciones.get(indice) else { continue };
+            let Ok(opcion) = nodo.dyn_into::<web_sys::Element>() else {
+                continue;
+            };
+            let Some(accion) = opcion.get_attribute("data-fg-accion") else {
+                continue;
+            };
+            let Some(resto) = accion.strip_prefix("sel:") else {
+                continue;
+            };
+            let Some((variable, valor)) = resto.split_once(':') else {
+                continue;
+            };
+            let elegida = estado.obtener(variable).unwrap_or("");
+            let _ = opcion.set_attribute(
+                "aria-selected",
+                if elegida == valor { "true" } else { "false" },
+            );
+        }
+    }
+}
+
+fn repintar_dom() {
+    let (html, raiz) = DOM_STATE.with(|celda| {
+        let estado_dom = celda.borrow();
+        let layout = extraer_layout(&estado_dom.declaraciones);
+        let nodos = layout_a_nodos(&layout);
+        let html = nodos
+            .iter()
+            .map(|nodo| forja_gui_dom::render_con_estado(nodo, &estado_dom.estado))
+            .collect::<String>();
+        (html.clone(), estado_dom.raiz.clone())
+    });
+
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(raiz) = document.get_element_by_id(&raiz) else {
+        return;
+    };
+    raiz.set_inner_html(&html);
+
+    let ya_enganchado = DOM_STATE.with(|celda| celda.borrow().enganchado);
+    if !ya_enganchado {
+        enganchar_dom();
+        DOM_STATE.with(|celda| celda.borrow_mut().enganchado = true);
+    }
+}
+
+/// Engancha un único listener delegado por tipo de evento sobre la raíz.
+///
+/// Delegar evita crear un closure por widget (y por render); el widget se
+/// identifica leyendo `data-fg-accion` / `data-fg-variable` del `target`.
+fn enganchar_dom() {
+    use wasm_bindgen::closure::Closure;
+
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let raiz = DOM_STATE.with(|celda| celda.borrow().raiz.clone());
+    let Some(elemento) = document.get_element_by_id(&raiz) else {
+        return;
+    };
+
+    // Clic: ejecuta la función Forja de la acción y repinta.
+    let al_hacer_clic = Closure::<dyn FnMut(web_sys::Event)>::new(move |evento: web_sys::Event| {
+        let Some(accion) = atributo_del_evento(&evento, forja_gui_dom::eventos::ACCION) else {
+            return;
+        };
+        // Convenciones de interfaz que no necesitan una función Forja:
+        //   tab:<variable>:<valor>  → cambia la pestaña activa
+        //   abrir:<id> / cerrar:<id> → diálogo nativo
+        if let Some(resto) = accion
+            .strip_prefix("tab:")
+            .or_else(|| accion.strip_prefix("sel:"))
+        {
+            if let Some((variable, valor)) = resto.split_once(':') {
+                DOM_STATE.with(|celda| {
+                    let mut estado_dom = celda.borrow_mut();
+                    estado_dom.estado.fijar(variable, valor);
+                    estado_dom
+                        .almacen
+                        .fijar(variable, serde_json::Value::String(valor.to_string()));
+                });
+                actualizar_dom();
+            }
+            return;
+        }
+        if let Some(id) = accion.strip_prefix("abrir:") {
+            if let Some(dialogo) = dialogo_por_id(id) {
+                let _ = dialogo.show_modal();
+            }
+            return;
+        }
+        if let Some(id) = accion.strip_prefix("cerrar:") {
+            if let Some(dialogo) = dialogo_por_id(id) {
+                let _ = dialogo.close();
+            }
+            return;
+        }
+
+        let (declaraciones, almacen) = DOM_STATE.with(|celda| {
+            let estado_dom = celda.borrow();
+            (estado_dom.declaraciones.clone(), estado_dom.almacen.clone())
+        });
+        match ejecutar_funcion(&accion, &[], &declaraciones, &almacen) {
+            Ok(_) => {
+                // El callback pudo cambiar variables: se reflejan antes de pintar.
+                sincronizar_estado();
+                actualizar_dom()
+            }
+            Err(e) => web_sys::console::log_1(&format!("acción '{}' falló: {}", accion, e).into()),
+        }
+    });
+    let _ =
+        elemento.add_event_listener_with_callback("click", al_hacer_clic.as_ref().unchecked_ref());
+    al_hacer_clic.forget();
+
+    // Cambio de valor: actualiza el estado y el almacén, y repinta.
+    let al_cambiar = Closure::<dyn FnMut(web_sys::Event)>::new(move |evento: web_sys::Event| {
+        let Some(variable) = atributo_del_evento(&evento, "data-fg-variable") else {
+            return;
+        };
+        let Some(target) = evento.target() else {
+            return;
+        };
+        let Ok(entrada) = target.dyn_into::<web_sys::HtmlInputElement>() else {
+            return;
+        };
+        let valor = if entrada.type_() == "checkbox" {
+            let marcado = entrada.checked();
+            DOM_STATE.with(|celda| celda.borrow_mut().estado.fijar_booleano(&variable, marcado));
+            if marcado { "verdadero" } else { "falso" }.to_string()
+        } else {
+            let texto = entrada.value();
+            DOM_STATE.with(|celda| celda.borrow_mut().estado.fijar(&variable, texto.clone()));
+            texto
+        };
+        DOM_STATE.with(|celda| {
+            celda
+                .borrow()
+                .almacen
+                .fijar(&variable, serde_json::Value::String(valor));
+        });
+        // El campo cambió una variable: se actualizan los nodos ligados.
+        actualizar_dom();
+    });
+    let _ =
+        elemento.add_event_listener_with_callback("change", al_cambiar.as_ref().unchecked_ref());
+    al_cambiar.forget();
+
+    // Teclado en las pestañas: el patrón ARIA pide flechas, Home y End.
+    let al_teclear = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |evento: web_sys::KeyboardEvent| {
+        let tecla = evento.key();
+        if !matches!(tecla.as_str(), "ArrowRight" | "ArrowLeft" | "Home" | "End") {
+            return;
+        }
+        let Some(target) = evento.target() else {
+            return;
+        };
+        let Ok(target) = target.dyn_into::<web_sys::Element>() else {
+            return;
+        };
+        if target.get_attribute("role").as_deref() != Some("tab") {
+            return;
+        }
+        let raiz = DOM_STATE.with(|celda| celda.borrow().raiz.clone());
+        let Some(documento) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
+        let Some(contenedor) = documento.get_element_by_id(&raiz) else {
+            return;
+        };
+        let Ok(pestanas) = contenedor.query_selector_all("[role=\"tab\"]") else {
+            return;
+        };
+        let total = pestanas.length() as i64;
+        if total == 0 {
+            return;
+        }
+
+        let mut actual: Option<i64> = None;
+        for indice in 0..total {
+            if let Some(nodo) = pestanas.get(indice as u32) {
+                let es_el_mismo = nodo
+                    .dyn_ref::<web_sys::Node>()
+                    .map(|n| n.is_same_node(Some(target.unchecked_ref())))
+                    .unwrap_or(false);
+                if es_el_mismo {
+                    actual = Some(indice);
+                    break;
+                }
+            }
+        }
+        let Some(actual) = actual else { return };
+
+        let destino = match tecla.as_str() {
+            "ArrowRight" => (actual + 1) % total,
+            "ArrowLeft" => (actual + total - 1) % total,
+            "Home" => 0,
+            _ => total - 1,
+        };
+
+        let Some(nodo_destino) = pestanas.get(destino as u32) else {
+            return;
+        };
+        let Ok(elemento_destino) = nodo_destino.dyn_into::<web_sys::Element>() else {
+            return;
+        };
+        let Some(accion) = elemento_destino.get_attribute("data-fg-accion") else {
+            return;
+        };
+        let Some(resto) = accion.strip_prefix("tab:") else {
+            return;
+        };
+        let Some((variable, valor)) = resto.split_once(':') else {
+            return;
+        };
+
+        DOM_STATE.with(|celda| {
+            let mut estado_dom = celda.borrow_mut();
+            estado_dom.estado.fijar(variable, valor);
+            estado_dom
+                .almacen
+                .fijar(variable, serde_json::Value::String(valor.to_string()));
+        });
+        actualizar_dom();
+
+        // Se devuelve el foco a la pestaña nueva (el árbol no se recrea, pero
+        // el botón no recibe foco solo con cambiar aria-selected).
+        if let Some(nuevo) = documento.get_element_by_id(&raiz) {
+            if let Ok(Some(boton)) = nuevo.query_selector(&format!("[data-fg-accion=\"{accion}\"]")) {
+                if let Some(boton) = boton.dyn_ref::<web_sys::HtmlElement>() {
+                    boton.focus().ok();
+                }
+            }
+        }
+    });
+    let _ =
+        elemento.add_event_listener_with_callback("keydown", al_teclear.as_ref().unchecked_ref());
+    al_teclear.forget();
+}
+
+/// Busca un `<dialog id="fg-dialogo-<id>">`.
+fn dialogo_por_id(id: &str) -> Option<web_sys::HtmlDialogElement> {
+    let document = web_sys::window()?.document()?;
+    let elemento = document.get_element_by_id(&format!("fg-dialogo-{id}"))?;
+    elemento.dyn_into::<web_sys::HtmlDialogElement>().ok()
+}
+
+/// Lee un atributo `data-fg-*` del `target` o de su ancestro más cercano.
+fn atributo_del_evento(evento: &web_sys::Event, nombre: &str) -> Option<String> {
+    let mut actual = evento.target()?.dyn_into::<web_sys::Element>().ok();
+    while let Some(elemento) = actual {
+        if let Some(valor) = elemento.get_attribute(nombre) {
+            if !valor.is_empty() {
+                return Some(valor);
+            }
+        }
+        actual = elemento.parent_element();
+    }
+    None
+}
+
+/// Renderiza la interfaz como **DOM real** dentro del elemento `raiz_id`.
+///
+/// Es el reemplazo del canvas: los widgets quedan como `div`/`button`/`input`
+/// con etiquetas accesibles, y los clics ejecutan la función Forja indicada en
+/// la acción del botón. Devuelve "ok" o un mensaje de error.
+#[wasm_bindgen]
+pub fn renderizar_dom(raiz_id: &str, codigo: &str) -> String {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return "Error: no document".to_string();
+    };
+    if document.get_element_by_id(raiz_id).is_none() {
+        return format!("Error: no se encontró el elemento '{}'", raiz_id);
+    }
+
+    // `analizar` (lexer+parser+tipos+préstamos) alcanza para extraer el árbol:
+    // no hace falta optimizar ni generar código Rust, y en wasm eso se nota.
+    let declaraciones = match compilar_a_ast(codigo) {
+        Ok(declaraciones) => declaraciones,
+        Err(error) => return format!("Error de compilación: {error}"),
+    };
+
+    let almacen = VariableAlmacen::nuevo();
+    inicializar_estado(&declaraciones, &almacen);
+
+    DOM_STATE.with(|celda| {
+        let mut estado_dom = celda.borrow_mut();
+        estado_dom.almacen = almacen.clone();
+        estado_dom.declaraciones = declaraciones.clone();
+        estado_dom.estado = forja_gui_dom::Estado::nuevo();
+        estado_dom.raiz = raiz_id.to_string();
+
+        // Semilla del estado: todas las variables que el programa ya definió.
+        for (nombre, texto) in almacen.como_textos() {
+            estado_dom.estado.fijar(&nombre, texto);
+        }
+    });
+
+    repintar_dom();
+    "ok".to_string()
+}
+
+
+/// Diagnóstico del modo DOM (para depurar en el navegador).
+#[wasm_bindgen]
+pub fn diagnostico_dom() -> String {
+    DOM_STATE.with(|celda| {
+        let estado_dom = celda.borrow();
+        let estado: Vec<String> = estado_dom
+            .estado
+            .valores()
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        let almacen: Vec<String> = estado_dom
+            .almacen
+            .como_textos()
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        format!("estado[{}] almacen[{}]", estado.join(","), almacen.join(","))
+    })
+}
+
+/// Fuerza un repintado completo (recrea el árbol). Sirve para comparar el costo
+/// del repintado total contra la actualización dirigida.
+#[wasm_bindgen]
+pub fn repintar_completo() {
+    repintar_dom();
 }
