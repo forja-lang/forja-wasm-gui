@@ -1,14 +1,14 @@
 #![allow(dead_code)]
 // Forja WASM GUI Runtime
-// Renderiza interfaces Forja en un <canvas> HTML5 usando Canvas 2D API.
+// Dibuja interfaces Forja como DOM real (HTML accesible), sin canvas.
 // No depende de winit, Xilem, Masonry ni Vello.
 //
 // Arquitectura:
 //   - Compila código Forja a AST con `forja-syntax` (lexer + parser)
 //   - Convierte AST → Layout simplificado
-//   - Renderiza Layout en Canvas 2D
-//   - Maneja eventos (click) con hit-testing sobre rectángulos de widgets
-//   - Ejecuta callbacks Forja mediante evaluador tree-walking simplificado
+//   - Convierte Layout en nodos DOM (gui-dom) y los pinta como HTML
+//   - Maneja eventos por delegación sobre el árbol DOM
+//   - Ejecuta callbacks Forja con un evaluador tree-walking
 
 use forja_syntax::ast::{Declaracion, Expresion, Operador, OperadorUnario};
 use std::cell::RefCell;
@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 /// Compila a AST usando sólo el frontend (`forja-syntax`): lexer + parser.
 ///
@@ -221,7 +220,7 @@ pub enum Layout {
         hijos: Vec<Layout>,
         abierto: bool,
     },
-    /// Placeholder para layouts no implementados en Canvas
+    /// Función de GUI que no se reconoce (se avisa en la interfaz)
     Unimplemented(String),
 }
 
@@ -307,400 +306,10 @@ impl Ambito {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// WIDGET RECT (para hit testing en eventos)
-// ═══════════════════════════════════════════════════════════════════
-
-#[derive(Debug, Clone)]
-struct WidgetHitArea {
-    x: f64,
-    y: f64,
-    ancho: f64,
-    alto: f64,
-    /// Referencia al Layout original para identificar el widget
-    layout: Layout,
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// ESTADO GLOBAL DE LA GUI
-// ═══════════════════════════════════════════════════════════════════
-
-struct AppState {
-    almacen: VariableAlmacen,
-    declaraciones: Vec<Declaracion>,
-    hit_areas: Vec<WidgetHitArea>,
-    ultimo_layout: Option<Layout>,
-    canvas_ancho: f64,
-    canvas_alto: f64,
-}
-
-impl AppState {
-    fn nuevo() -> Self {
-        AppState {
-            almacen: VariableAlmacen::nuevo(),
-            declaraciones: Vec::new(),
-            hit_areas: Vec::new(),
-            ultimo_layout: None,
-            canvas_ancho: 600.0,
-            canvas_alto: 400.0,
-        }
-    }
-}
-
-thread_local! {
-    static APP_STATE: RefCell<AppState> = RefCell::new(AppState::nuevo());
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // COLORES DEL TEMA (Material You simplificado)
 // ═══════════════════════════════════════════════════════════════════
 
 #[allow(dead_code)]
-const COLOR_PRIMARY: &str = "#6750A4";
-const COLOR_ON_PRIMARY: &str = "#FFFFFF";
-const COLOR_PRIMARY_CONTAINER: &str = "#EADDFF";
-const COLOR_SECONDARY: &str = "#625B71";
-const COLOR_ON_SECONDARY: &str = "#FFFFFF";
-const COLOR_SURFACE: &str = "#F5F0F7";
-const COLOR_ON_SURFACE: &str = "#1D1B20";
-const COLOR_SURFACE_VARIANT: &str = "#E7E0EC";
-const COLOR_ON_SURFACE_VARIANT: &str = "#49454F";
-const COLOR_OUTLINE: &str = "#79747E";
-const COLOR_BACKGROUND: &str = "#FEF7FF";
-const COLOR_ERROR: &str = "#B3261E";
-const COLOR_ON_ERROR: &str = "#FFFFFF";
-
-// ═══════════════════════════════════════════════════════════════════
-// RENDERIZADO CANVAS 2D
-// ═══════════════════════════════════════════════════════════════════
-
-/// Renderiza un layout completo en el canvas, retornando (ancho_usado, alto_usado)
-fn renderizar_layout(
-    ctx: &CanvasRenderingContext2d,
-    layout: &Layout,
-    x: f64,
-    y: f64,
-    ancho_disponible: f64,
-    hit_areas: &mut Vec<WidgetHitArea>,
-    almacen: &VariableAlmacen,
-) -> (f64, f64) {
-    match layout {
-        Layout::Column { children, gap } => {
-            let mut cy: f64 = y + gap;
-            let mut max_ancho: f64 = 0.0;
-            for hijo in children {
-                let usado = renderizar_layout(
-                    ctx,
-                    hijo,
-                    x + gap,
-                    cy,
-                    ancho_disponible - gap * 2.0,
-                    hit_areas,
-                    almacen,
-                );
-                let alto: f64 = usado.1;
-                max_ancho = max_ancho.max(usado.0 + gap * 2.0);
-                cy += alto + gap;
-            }
-            (max_ancho.max(ancho_disponible), cy - y)
-        }
-
-        Layout::Row { children, gap } => {
-            let mut cx: f64 = x + gap;
-            let mut max_alto: f64 = 0.0;
-            // Primera pasada: medir todos los hijos
-            let mut medidas: Vec<(f64, f64)> = Vec::new();
-            for hijo in children {
-                let ancho_est = estimar_ancho(hijo, ancho_disponible / children.len() as f64);
-                medidas.push((ancho_est, 40.0)); // alto estimado
-            }
-            for (i, hijo) in children.iter().enumerate() {
-                let ancho_hijo = medidas[i].0;
-                let usado =
-                    renderizar_layout(ctx, hijo, cx, y + gap, ancho_hijo, hit_areas, almacen);
-                max_alto = max_alto.max(usado.1 + gap * 2.0);
-                cx += ancho_hijo + gap;
-            }
-            (cx - x, max_alto.max(40.0))
-        }
-
-        Layout::PilaZ(children) => {
-            let mut max_ancho: f64 = 0.0;
-            let mut max_alto: f64 = 0.0;
-            for hijo in children {
-                let usado =
-                    renderizar_layout(ctx, hijo, x, y, ancho_disponible, hit_areas, almacen);
-                max_ancho = max_ancho.max(usado.0);
-                max_alto = max_alto.max(usado.1);
-            }
-            (max_ancho, max_alto)
-        }
-
-        Layout::Label { texto } => renderizar_etiqueta(ctx, texto, x, y, ancho_disponible),
-
-        Layout::VariableLabel { variable } => {
-            let texto = almacen
-                .obtener(variable)
-                .map(|v| ValorGUI::from_serde(&v).to_display())
-                .unwrap_or_else(|| format!("{{{{{}}}}}", variable));
-            renderizar_etiqueta(ctx, &texto, x, y, ancho_disponible)
-        }
-
-        Layout::Button { texto, .. } => renderizar_boton(
-            ctx,
-            texto,
-            x,
-            y,
-            ancho_disponible,
-            hit_areas,
-            layout.clone(),
-        ),
-
-        Layout::EntradaTexto {
-            variable,
-            placeholder,
-        } => renderizar_texto_entrada(
-            ctx,
-            variable,
-            placeholder,
-            Caja {
-                x,
-                y,
-                ancho: ancho_disponible,
-            },
-            almacen,
-            hit_areas,
-            layout.clone(),
-        ),
-
-        Layout::Title(texto) => {
-            ctx.set_font("bold 20px sans-serif");
-            ctx.set_fill_style_str(COLOR_ON_SURFACE);
-            ctx.fill_text(texto, x + 4.0, y + 24.0).ok();
-            (ancho_disponible.max(100.0), 32.0)
-        }
-
-        Layout::Spacer(tam) => (ancho_disponible, *tam),
-
-        // Widgets sólo de DOM: en canvas no se dibujan (ruta legada).
-        Layout::Pestanas { .. }
-        | Layout::ListaSeleccion { .. }
-        | Layout::Plegable { .. }
-        | Layout::Dialogo { .. }
-        | Layout::Texto(_)
-        | Layout::Progreso { .. }
-        | Layout::Cargando { .. }
-        | Layout::BotonIcono { .. }
-        | Layout::Formulario { .. }
-        | Layout::Tabla { .. }
-        | Layout::Insignia { .. }
-        | Layout::Aviso { .. } => (ancho_disponible, 0.0),
-
-        Layout::Unimplemented(desc) => {
-            ctx.set_fill_style_str(COLOR_ERROR);
-            ctx.set_font("12px sans-serif");
-            ctx.fill_text(&format!("⚠ {}", desc), x + 4.0, y + 16.0)
-                .ok();
-            (ancho_disponible, 24.0)
-        }
-    }
-}
-
-fn renderizar_etiqueta(
-    ctx: &CanvasRenderingContext2d,
-    texto: &str,
-    x: f64,
-    y: f64,
-    ancho_disponible: f64,
-) -> (f64, f64) {
-    ctx.set_font("14px sans-serif");
-    ctx.set_fill_style_str(COLOR_ON_SURFACE);
-    let ancho_estimado = (texto.len() as f64 * 8.0 + 16.0).min(ancho_disponible);
-    ctx.fill_text(texto, x + 4.0, y + 20.0).ok();
-    (ancho_estimado.max(20.0), 28.0)
-}
-
-fn renderizar_boton(
-    ctx: &CanvasRenderingContext2d,
-    texto: &str,
-    x: f64,
-    y: f64,
-    ancho_disponible: f64,
-    hit_areas: &mut Vec<WidgetHitArea>,
-    layout: Layout,
-) -> (f64, f64) {
-    let ancho = ancho_disponible.clamp(80.0, 300.0);
-    let alto = 38.0;
-    let radio_esq = 20.0;
-
-    // Sombra
-    ctx.set_fill_style_str("rgba(0,0,0,0.15)");
-    redondear_rect(ctx, x + 2.0, y + 2.0, ancho, alto, radio_esq);
-    ctx.fill();
-
-    // Fondo
-    ctx.set_fill_style_str(COLOR_PRIMARY);
-    redondear_rect(ctx, x, y, ancho, alto, radio_esq);
-    ctx.fill();
-
-    // Texto
-    ctx.set_fill_style_str(COLOR_ON_PRIMARY);
-    ctx.set_font("bold 14px sans-serif");
-    let ancho_texto_est = (texto.len() as f64 * 9.0).min(ancho - 16.0);
-    let tx = x + (ancho - ancho_texto_est) / 2.0;
-    ctx.fill_text(texto, tx, y + 25.0).ok();
-
-    // Registrar área de hit-testing
-    hit_areas.push(WidgetHitArea {
-        x,
-        y,
-        ancho,
-        alto,
-        layout,
-    });
-
-    (ancho, alto + 4.0)
-}
-
-/// Caja de layout: origen y ancho disponible.
-struct Caja {
-    x: f64,
-    y: f64,
-    ancho: f64,
-}
-
-fn renderizar_texto_entrada(
-    ctx: &CanvasRenderingContext2d,
-    variable: &str,
-    placeholder: &str,
-    caja: Caja,
-    almacen: &VariableAlmacen,
-    hit_areas: &mut Vec<WidgetHitArea>,
-    layout: Layout,
-) -> (f64, f64) {
-    let Caja {
-        x,
-        y,
-        ancho: ancho_disponible,
-    } = caja;
-    let ancho = ancho_disponible.max(120.0);
-    let alto = 38.0;
-    let radio_esq = 4.0;
-
-    // Obtener valor actual
-    let valor_actual = almacen
-        .obtener(variable)
-        .map(|v| ValorGUI::from_serde(&v).to_display())
-        .unwrap_or_default();
-
-    // Fondo
-    ctx.set_fill_style_str(COLOR_SURFACE_VARIANT);
-    redondear_rect(ctx, x, y, ancho, alto, radio_esq);
-    ctx.fill();
-
-    // Borde inferior (estilo filled)
-    ctx.set_stroke_style_str(COLOR_OUTLINE);
-    ctx.set_line_width(1.0);
-    ctx.begin_path();
-    ctx.move_to(x, y + alto);
-    ctx.line_to(x + ancho, y + alto);
-    ctx.stroke();
-
-    // Texto del valor o placeholder
-    if !valor_actual.is_empty() {
-        ctx.set_fill_style_str(COLOR_ON_SURFACE);
-        ctx.set_font("14px sans-serif");
-        ctx.fill_text(&valor_actual, x + 8.0, y + 25.0).ok();
-    } else {
-        ctx.set_fill_style_str(COLOR_ON_SURFACE_VARIANT);
-        ctx.set_font("14px sans-serif");
-        ctx.fill_text(placeholder, x + 8.0, y + 25.0).ok();
-    }
-
-    // Registrar área de hit-testing
-    hit_areas.push(WidgetHitArea {
-        x,
-        y,
-        ancho,
-        alto,
-        layout,
-    });
-
-    (ancho, alto + 4.0)
-}
-
-/// Dibuja un rectángulo redondeado usando path 2D
-fn redondear_rect(ctx: &CanvasRenderingContext2d, x: f64, y: f64, w: f64, h: f64, r: f64) {
-    let radio = r.min(w / 2.0).min(h / 2.0);
-    ctx.begin_path();
-    ctx.move_to(x + radio, y);
-    ctx.line_to(x + w - radio, y);
-    ctx.arc(
-        x + w - radio,
-        y + radio,
-        radio,
-        -std::f64::consts::FRAC_PI_2,
-        0.0,
-    )
-    .ok();
-    ctx.line_to(x + w, y + h - radio);
-    ctx.arc(
-        x + w - radio,
-        y + h - radio,
-        radio,
-        0.0,
-        std::f64::consts::FRAC_PI_2,
-    )
-    .ok();
-    ctx.line_to(x + radio, y + h);
-    ctx.arc(
-        x + radio,
-        y + h - radio,
-        radio,
-        std::f64::consts::FRAC_PI_2,
-        std::f64::consts::PI,
-    )
-    .ok();
-    ctx.line_to(x, y + radio);
-    ctx.arc(
-        x + radio,
-        y + radio,
-        radio,
-        std::f64::consts::PI,
-        -std::f64::consts::FRAC_PI_2,
-    )
-    .ok();
-    ctx.close_path();
-}
-
-/// Estima el ancho de un widget (para layout de filas)
-fn estimar_ancho(layout: &Layout, _default_ancho: f64) -> f64 {
-    match layout {
-        Layout::Label { texto } | Layout::Title(texto) => {
-            (texto.len() as f64 * 8.0 + 16.0).min(250.0)
-        }
-        Layout::VariableLabel { .. } => 100.0,
-        Layout::Button { texto, .. } => (texto.len() as f64 * 9.0 + 32.0).clamp(80.0, 200.0),
-        Layout::EntradaTexto { .. } => 150.0,
-        Layout::Spacer(tam) => *tam,
-        Layout::Column { .. } => _default_ancho,
-        Layout::Row { .. } => _default_ancho,
-        Layout::PilaZ { .. } => _default_ancho,
-        Layout::Pestanas { .. } => _default_ancho,
-        Layout::ListaSeleccion { .. } => _default_ancho,
-        Layout::Tabla { .. } => _default_ancho,
-        Layout::Texto(texto) => (texto.len() as f64 * 8.0).min(200.0),
-        Layout::Formulario { .. } => _default_ancho,
-        Layout::Progreso { .. } => _default_ancho,
-        Layout::Cargando { .. } => 120.0,
-        Layout::BotonIcono { .. } => 40.0,
-        Layout::Insignia { .. } => 90.0,
-        Layout::Aviso { .. } => _default_ancho,
-        Layout::Plegable { .. } => _default_ancho,
-        Layout::Dialogo { .. } => _default_ancho,
-        Layout::Unimplemented(_) => _default_ancho,
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // AST → LAYOUT (conversión simplificada)
 // ═══════════════════════════════════════════════════════════════════
@@ -983,7 +592,11 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                         Some(Expresion::LiteralTexto(s)) => s.clone(),
                         _ => "post".to_string(),
                     };
-                    let hijos = argumentos.iter().skip(2).filter_map(expr_a_layout).collect();
+                    let hijos = argumentos
+                        .iter()
+                        .skip(2)
+                        .filter_map(expr_a_layout)
+                        .collect();
                     Some(Layout::Formulario {
                         accion,
                         metodo,
@@ -1735,102 +1348,6 @@ fn inicializar_estado(declaraciones: &[Declaracion], almacen: &VariableAlmacen) 
 // EVENTOS (click handling)
 // ═══════════════════════════════════════════════════════════════════
 
-/// Procesa un click en coordenadas (x, y) del canvas.
-/// Busca el widget en hit_areas, y si es un botón ejecuta su callback.
-fn procesar_click(x: f64, y: f64, canvas_id: &str) {
-    let mut rerender = false;
-    APP_STATE.with(|state| {
-        let state = state.borrow_mut();
-        if state.declaraciones.is_empty() {
-            return;
-        }
-
-        // Buscar widget clickeado (de atrás hacia adelante para Z-order)
-        for area in state.hit_areas.iter().rev() {
-            if x >= area.x && x <= area.x + area.ancho && y >= area.y && y <= area.y + area.alto {
-                match &area.layout {
-                    Layout::Button { callback, .. } if !callback.is_empty() => {
-                        web_sys::console::log_1(
-                            &format!("Click en botón, callback: {}", callback).into(),
-                        );
-                        // Ejecutar la función callback
-                        let args: Vec<ValorGUI> = Vec::new();
-                        match ejecutar_funcion(
-                            callback,
-                            &args,
-                            &state.declaraciones,
-                            &state.almacen,
-                        ) {
-                            Ok(_) => {
-                                web_sys::console::log_1(
-                                    &format!("Callback '{}' ejecutado OK", callback).into(),
-                                );
-                                rerender = true;
-                            }
-                            Err(e) => {
-                                web_sys::console::log_1(
-                                    &format!("Error en callback '{}': {}", callback, e).into(),
-                                );
-                            }
-                        }
-                    }
-                    Layout::EntradaTexto { variable, .. } => {
-                        // Para TextInput, mostrar prompt en consola por ahora
-                        web_sys::console::log_1(
-                            &format!("Click en TextInput '{}'", variable).into(),
-                        );
-                        // En una implementación futura, esto abriría un prompt
-                        // o conectaría con un input HTML oculto
-                    }
-                    _ => {}
-                }
-                break;
-            }
-        }
-    });
-
-    // El callback pudo mutar el estado (store): re-renderizar para reflejarlo.
-    if rerender {
-        let _ = rerenderizar(canvas_id);
-    }
-}
-
-/// Configura event listeners en el canvas para clicks
-fn configurar_eventos_canvas(canvas_id: &str) {
-    let document = match web_sys::window().and_then(|w| w.document()) {
-        Some(d) => d,
-        None => return,
-    };
-    let canvas = match document
-        .get_element_by_id(canvas_id)
-        .and_then(|el| el.dyn_into::<HtmlCanvasElement>().ok())
-    {
-        Some(c) => c,
-        None => return,
-    };
-
-    // Listener por elemento: el ClientRouter reemplaza el DOM, así que un canvas
-    // nuevo (mismo id) debe volver a registrar su listener. Un `Once` global no
-    // sirve porque sobrevive a la navegación y dejaría el canvas nuevo sin click.
-    if canvas.get_attribute("data-gui-listener").is_some() {
-        return;
-    }
-    let _ = canvas.set_attribute("data-gui-listener", "1");
-
-    let canvas_para_click = canvas_id.to_string();
-    let closure_click = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-        let x = event.offset_x() as f64;
-        let y = event.offset_y() as f64;
-        web_sys::console::log_1(&format!("Click en ({}, {})", x, y).into());
-        procesar_click(x, y, &canvas_para_click);
-    }) as Box<dyn FnMut(_)>);
-
-    canvas
-        .add_event_listener_with_callback("click", closure_click.as_ref().unchecked_ref())
-        .ok();
-    closure_click.forget();
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // WASM EXPORTS
 // ═══════════════════════════════════════════════════════════════════
@@ -1841,169 +1358,18 @@ pub fn version() -> String {
     format!("forja-wasm-gui v{}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Renderiza un layout Forja en un canvas.
-/// Compila el código, extrae el layout y lo dibuja en el canvas.
-/// Retorna "ok" en éxito o un mensaje de error.
+/// Ejecuta código Forja y lo pinta como **DOM** en `raiz_id`.
+///
+/// Nombre que usa el playground de la documentación (antes pintaba un canvas).
 #[wasm_bindgen]
-pub fn renderizar(canvas_id: &str, codigo: &str) -> String {
-    // Obtener canvas y contexto
-    let document = match web_sys::window() {
-        Some(win) => win.document(),
-        None => return "Error: no window".to_string(),
-    };
-    let document = match document {
-        Some(d) => d,
-        None => return "Error: no document".to_string(),
-    };
-    let canvas = match document.get_element_by_id(canvas_id) {
-        Some(el) => el,
-        None => return format!("Error: canvas '{}' no encontrado", canvas_id),
-    };
-    let canvas: HtmlCanvasElement = match canvas.dyn_into() {
-        Ok(c) => c,
-        Err(_) => return "Error: elemento no es un canvas".to_string(),
-    };
-    let ctx = match canvas.get_context("2d") {
-        Ok(Some(c)) => c,
-        _ => return "Error: no se pudo obtener contexto 2D".to_string(),
-    };
-    let ctx: CanvasRenderingContext2d = match ctx.dyn_into() {
-        Ok(c) => c,
-        Err(_) => return "Error: contexto no es 2D".to_string(),
-    };
-
-    let ancho = canvas.width() as f64;
-    let alto = canvas.height() as f64;
-
-    // Limpiar canvas
-    ctx.clear_rect(0.0, 0.0, ancho, alto);
-
-    // Fondo
-    ctx.set_fill_style_str(COLOR_BACKGROUND);
-    ctx.fill_rect(0.0, 0.0, ancho, alto);
-
-    // Compilar código Forja
-    match compilar_a_ast(codigo) {
-        Ok(declaraciones) => {
-            // Almacenar estado global
-            let almacen = VariableAlmacen::nuevo();
-
-            // Inicializar variables desde la función main
-            inicializar_estado(&declaraciones, &almacen);
-
-            // Extraer layout
-            let layout = extraer_layout(&declaraciones);
-
-            // Guardar estado y luego renderizar (dos pasos para evitar borrow conflicts)
-            let almacen_clonar = almacen.clone();
-            APP_STATE.with(|state| {
-                let mut s = state.borrow_mut();
-                s.almacen = almacen_clonar;
-                s.declaraciones = declaraciones;
-                s.hit_areas.clear();
-                s.canvas_ancho = ancho;
-                s.canvas_alto = alto;
-                s.ultimo_layout = Some(layout);
-            });
-
-            // Renderizar layout (usando referencias locales)
-            APP_STATE.with(|state| {
-                let s = state.borrow();
-                if let Some(layout_ref) = &s.ultimo_layout {
-                    let mut areas_local: Vec<WidgetHitArea> = Vec::new();
-                    renderizar_layout(
-                        &ctx,
-                        layout_ref,
-                        10.0,
-                        10.0,
-                        ancho - 20.0,
-                        &mut areas_local,
-                        &s.almacen,
-                    );
-                    // Devolver áreas para almacenar
-                    drop(s);
-                    let mut s = state.borrow_mut();
-                    s.hit_areas = areas_local;
-                }
-            });
-
-            // Configurar eventos (solo la primera vez)
-            configurar_eventos_canvas(canvas_id);
-
-            "ok".to_string()
-        }
-        Err(error) => {
-            // Mostrar error en canvas
-            ctx.set_fill_style_str(COLOR_ERROR);
-            ctx.set_font("14px sans-serif");
-            ctx.fill_text(&error, 10.0, 30.0).ok();
-            format!("Error compilando: {error}")
-        }
-    }
+pub fn ejecutar_dom(raiz_id: &str, codigo: &str) -> String {
+    renderizar_dom(raiz_id, codigo)
 }
 
-/// Ejecuta código Forja en modo GUI y lo renderiza.
-/// Atajo para renderizar + eventos.
+/// Repinta el DOM con el estado actual, sin recompilar el programa.
 #[wasm_bindgen]
-pub fn ejecutar_gui(canvas_id: &str, codigo: &str) -> String {
-    renderizar(canvas_id, codigo)
-}
-
-/// Fuerza un re-renderizado del último layout (útil después de eventos)
-#[wasm_bindgen]
-pub fn rerenderizar(canvas_id: &str) -> String {
-    let document = match web_sys::window() {
-        Some(win) => win.document(),
-        None => return "Error: no window".to_string(),
-    };
-    let document = match document {
-        Some(d) => d,
-        None => return "Error: no document".to_string(),
-    };
-    let canvas = match document.get_element_by_id(canvas_id) {
-        Some(el) => el,
-        None => return format!("Error: canvas '{}' no encontrado", canvas_id),
-    };
-    let canvas: HtmlCanvasElement = match canvas.dyn_into() {
-        Ok(c) => c,
-        Err(_) => return "Error: elemento no es un canvas".to_string(),
-    };
-    let ctx = match canvas.get_context("2d") {
-        Ok(Some(c)) => c,
-        _ => return "Error: no se pudo obtener contexto 2D".to_string(),
-    };
-    let ctx: CanvasRenderingContext2d = match ctx.dyn_into() {
-        Ok(c) => c,
-        Err(_) => return "Error: contexto no es 2D".to_string(),
-    };
-
-    let ancho = canvas.width() as f64;
-    let alto = canvas.height() as f64;
-
-    // Limpiar y re-renderizar
-    ctx.clear_rect(0.0, 0.0, ancho, alto);
-    ctx.set_fill_style_str(COLOR_BACKGROUND);
-    ctx.fill_rect(0.0, 0.0, ancho, alto);
-
-    APP_STATE.with(|state| {
-        let s = state.borrow();
-        if let Some(layout_ref) = &s.ultimo_layout {
-            let mut areas_local: Vec<WidgetHitArea> = Vec::new();
-            renderizar_layout(
-                &ctx,
-                layout_ref,
-                10.0,
-                10.0,
-                ancho - 20.0,
-                &mut areas_local,
-                &s.almacen,
-            );
-            drop(s);
-            let mut s = state.borrow_mut();
-            s.hit_areas = areas_local;
-        }
-    });
-
+pub fn rerenderizar_dom() -> String {
+    repintar_dom();
     "ok".to_string()
 }
 
@@ -2601,8 +1967,7 @@ fn enganchar_dom() {
             boton.click();
         }
     });
-    let _ =
-        elemento.add_event_listener_with_callback("submit", al_enviar.as_ref().unchecked_ref());
+    let _ = elemento.add_event_listener_with_callback("submit", al_enviar.as_ref().unchecked_ref());
     al_enviar.forget();
 }
 
