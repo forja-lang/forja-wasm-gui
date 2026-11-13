@@ -31,6 +31,8 @@ web-sys = { version = "0.3", features = [
     "NodeList",
     "HtmlSelectElement",
     "HtmlTextAreaElement",
+    "History",
+    "Location",
 ] }
 forja-syntax = { path = "../../compiler/forja-syntax" }
 forja-gui-dom = { path = "../gui-dom" }

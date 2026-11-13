@@ -1769,6 +1769,17 @@ fn enganchar_dom() {
         // Convenciones de interfaz que no necesitan una función Forja:
         //   tab:<variable>:<valor>  → cambia la pestaña activa
         //   abrir:<id> / cerrar:<id> → diálogo nativo
+        // Navegación por URL: el hash es el historial (atrás/adelante funcionan).
+        if let Some(ruta_hash) = accion.strip_prefix("ir:") {
+            if let Some(ventana) = web_sys::window() {
+                if let Ok(historial) = ventana.history() {
+                    let _ = historial.push_state_with_url(&JsValue::NULL, "", Some(ruta_hash));
+                    // `push_state` no dispara `popstate`: se aplica a mano.
+                    aplicar_ruta(ruta_hash);
+                }
+            }
+            return;
+        }
         if let Some(columna) = accion.strip_prefix("orden:") {
             if let Some(target) = evento.target() {
                 if let Ok(elemento) = target.dyn_into::<web_sys::Element>() {
@@ -1969,6 +1980,39 @@ fn enganchar_dom() {
     });
     let _ = elemento.add_event_listener_with_callback("submit", al_enviar.as_ref().unchecked_ref());
     al_enviar.forget();
+
+    // Atrás/adelante del navegador: se reaplica la ruta.
+    let al_volver = Closure::<dyn FnMut(web_sys::Event)>::new(move |_evento: web_sys::Event| {
+        aplicar_ruta(&ruta_actual());
+    });
+    if let Some(ventana) = web_sys::window() {
+        let _ = ventana
+            .add_event_listener_with_callback("popstate", al_volver.as_ref().unchecked_ref());
+    }
+    al_volver.forget();
+}
+
+/// Aplica una ruta (`#/demo/detalle`) al estado y repinta.
+///
+/// La variable `ruta` queda disponible para el programa, así una pantalla puede
+/// decidir qué mostrar según la URL.
+fn aplicar_ruta(ruta: &str) {
+    let limpia = ruta.trim_start_matches('#').to_string();
+    DOM_STATE.with(|celda| {
+        let mut estado_dom = celda.borrow_mut();
+        estado_dom.estado.fijar("ruta", limpia.clone());
+        estado_dom
+            .almacen
+            .fijar("ruta", serde_json::Value::String(limpia));
+    });
+    actualizar_dom();
+}
+
+/// Ruta actual del navegador (con el `#` inicial).
+fn ruta_actual() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().hash().ok())
+        .unwrap_or_default()
 }
 
 /// Ordena la tabla del botón clickeado por la columna de su cabecera.
@@ -2101,6 +2145,13 @@ pub fn renderizar_dom(raiz_id: &str, codigo: &str) -> String {
         estado_dom.declaraciones = declaraciones.clone();
         estado_dom.estado = forja_gui_dom::Estado::nuevo();
         estado_dom.raiz = raiz_id.to_string();
+
+        // La ruta actual es una variable más (`ruta`), para que la app decida.
+        let inicial = ruta_actual().trim_start_matches('#').to_string();
+        estado_dom.estado.fijar("ruta", inicial.clone());
+        estado_dom
+            .almacen
+            .fijar("ruta", serde_json::Value::String(inicial));
 
         // Semilla del estado: todas las variables que el programa ya definió.
         for (nombre, texto) in almacen.como_textos() {
