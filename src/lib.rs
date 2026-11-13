@@ -173,6 +173,12 @@ pub enum Layout {
         hijos: Vec<Layout>,
         abierto: bool,
     },
+    /// Formulario: Enter envía; `accion` vacía lo maneja el runtime.
+    Formulario {
+        accion: String,
+        metodo: String,
+        hijos: Vec<Layout>,
+    },
     /// Texto plano (celdas de tabla): se escapa, sin envolver en `<p>`.
     Texto(String),
     /// Tabla: cabeceras + filas de celdas. `ordenable` hace que las cabeceras
@@ -465,6 +471,7 @@ fn renderizar_layout(
         | Layout::Plegable { .. }
         | Layout::Dialogo { .. }
         | Layout::Texto(_)
+        | Layout::Formulario { .. }
         | Layout::Tabla { .. }
         | Layout::Insignia { .. }
         | Layout::Aviso { .. } => (ancho_disponible, 0.0),
@@ -663,6 +670,7 @@ fn estimar_ancho(layout: &Layout, _default_ancho: f64) -> f64 {
         Layout::ListaSeleccion { .. } => _default_ancho,
         Layout::Tabla { .. } => _default_ancho,
         Layout::Texto(texto) => (texto.len() as f64 * 8.0).min(200.0),
+        Layout::Formulario { .. } => _default_ancho,
         Layout::Insignia { .. } => 90.0,
         Layout::Aviso { .. } => _default_ancho,
         Layout::Plegable { .. } => _default_ancho,
@@ -769,7 +777,6 @@ fn expr_a_pestana(expr: &Expresion) -> Option<(String, String, Vec<Layout>)> {
         .collect();
     Some((valor, etiqueta, hijos))
 }
-
 
 fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
     match expr {
@@ -909,6 +916,22 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                         opciones,
                     })
                 }
+                "formulario" | "form" | "Formulario" => {
+                    let accion = match argumentos.first() {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let metodo = match argumentos.get(1) {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => "post".to_string(),
+                    };
+                    let hijos = argumentos.iter().skip(2).filter_map(expr_a_layout).collect();
+                    Some(Layout::Formulario {
+                        accion,
+                        metodo,
+                        hijos,
+                    })
+                }
                 "tabla" | "table" | "Table" | "tabla_ordenable" | "table_sortable" => {
                     let ordenable = nombre == "tabla_ordenable" || nombre == "table_sortable";
                     let mut cabeceras: Vec<String> = Vec::new();
@@ -964,7 +987,11 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                     };
                     let abierto =
                         matches!(argumentos.get(1), Some(Expresion::LiteralBooleano(true)));
-                    let hijos = argumentos.iter().skip(2).filter_map(expr_a_layout).collect();
+                    let hijos = argumentos
+                        .iter()
+                        .skip(2)
+                        .filter_map(expr_a_layout)
+                        .collect();
                     Some(Layout::Plegable {
                         titulo,
                         hijos,
@@ -982,7 +1009,11 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                     };
                     let abierto =
                         matches!(argumentos.get(2), Some(Expresion::LiteralBooleano(true)));
-                    let hijos = argumentos.iter().skip(3).filter_map(expr_a_layout).collect();
+                    let hijos = argumentos
+                        .iter()
+                        .skip(3)
+                        .filter_map(expr_a_layout)
+                        .collect();
                     Some(Layout::Dialogo {
                         id,
                         titulo,
@@ -1987,6 +2018,15 @@ fn layout_a_nodos(layout: &Layout) -> Vec<NodoDom> {
                 })
                 .collect(),
         }],
+        Layout::Formulario {
+            accion,
+            metodo,
+            hijos,
+        } => vec![NodoDom::Formulario {
+            accion: accion.clone(),
+            metodo: metodo.clone(),
+            hijos: hijos.iter().flat_map(layout_a_nodos).collect(),
+        }],
         Layout::Texto(texto) => vec![NodoDom::Texto(texto.clone())],
         Layout::Tabla {
             cabeceras,
@@ -2120,7 +2160,9 @@ fn actualizar_dom() {
     // 1. Variables ligadas: inputs, textareas, selects y textos.
     if let Ok(nodos) = raiz.query_selector_all("[data-fg-variable]") {
         for indice in 0..nodos.length() {
-            let Some(nodo) = nodos.get(indice) else { continue };
+            let Some(nodo) = nodos.get(indice) else {
+                continue;
+            };
             let Ok(elemento) = nodo.dyn_into::<web_sys::Element>() else {
                 continue;
             };
@@ -2159,7 +2201,9 @@ fn actualizar_dom() {
     // 2. Pestañas y paneles: `aria-selected` y `hidden`.
     if let Ok(pestanas) = raiz.query_selector_all("[role=tab]") {
         for indice in 0..pestanas.length() {
-            let Some(nodo) = pestanas.get(indice) else { continue };
+            let Some(nodo) = pestanas.get(indice) else {
+                continue;
+            };
             let Ok(pestana) = nodo.dyn_into::<web_sys::Element>() else {
                 continue;
             };
@@ -2173,12 +2217,17 @@ fn actualizar_dom() {
                 continue;
             };
             let activa = estado.obtener(variable).unwrap_or("");
-            let _ = pestana.set_attribute("aria-selected", if activa == valor { "true" } else { "false" });
+            let _ = pestana.set_attribute(
+                "aria-selected",
+                if activa == valor { "true" } else { "false" },
+            );
         }
     }
     if let Ok(paneles) = raiz.query_selector_all("[data-fg-panel]") {
         for indice in 0..paneles.length() {
-            let Some(nodo) = paneles.get(indice) else { continue };
+            let Some(nodo) = paneles.get(indice) else {
+                continue;
+            };
             let Ok(panel) = nodo.dyn_into::<web_sys::Element>() else {
                 continue;
             };
@@ -2200,7 +2249,9 @@ fn actualizar_dom() {
     // 3. Listas con selección: `aria-selected` por opción.
     if let Ok(opciones) = raiz.query_selector_all("[role=option]") {
         for indice in 0..opciones.length() {
-            let Some(nodo) = opciones.get(indice) else { continue };
+            let Some(nodo) = opciones.get(indice) else {
+                continue;
+            };
             let Ok(opcion) = nodo.dyn_into::<web_sys::Element>() else {
                 continue;
             };
@@ -2360,95 +2411,119 @@ fn enganchar_dom() {
     al_cambiar.forget();
 
     // Teclado en las pestañas: el patrón ARIA pide flechas, Home y End.
-    let al_teclear = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |evento: web_sys::KeyboardEvent| {
-        let tecla = evento.key();
-        if !matches!(tecla.as_str(), "ArrowRight" | "ArrowLeft" | "Home" | "End") {
-            return;
-        }
-        let Some(target) = evento.target() else {
-            return;
-        };
-        let Ok(target) = target.dyn_into::<web_sys::Element>() else {
-            return;
-        };
-        if target.get_attribute("role").as_deref() != Some("tab") {
-            return;
-        }
-        let raiz = DOM_STATE.with(|celda| celda.borrow().raiz.clone());
-        let Some(documento) = web_sys::window().and_then(|w| w.document()) else {
-            return;
-        };
-        let Some(contenedor) = documento.get_element_by_id(&raiz) else {
-            return;
-        };
-        let Ok(pestanas) = contenedor.query_selector_all("[role=\"tab\"]") else {
-            return;
-        };
-        let total = pestanas.length() as i64;
-        if total == 0 {
-            return;
-        }
+    let al_teclear =
+        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |evento: web_sys::KeyboardEvent| {
+            let tecla = evento.key();
+            if !matches!(tecla.as_str(), "ArrowRight" | "ArrowLeft" | "Home" | "End") {
+                return;
+            }
+            let Some(target) = evento.target() else {
+                return;
+            };
+            let Ok(target) = target.dyn_into::<web_sys::Element>() else {
+                return;
+            };
+            if target.get_attribute("role").as_deref() != Some("tab") {
+                return;
+            }
+            let raiz = DOM_STATE.with(|celda| celda.borrow().raiz.clone());
+            let Some(documento) = web_sys::window().and_then(|w| w.document()) else {
+                return;
+            };
+            let Some(contenedor) = documento.get_element_by_id(&raiz) else {
+                return;
+            };
+            let Ok(pestanas) = contenedor.query_selector_all("[role=\"tab\"]") else {
+                return;
+            };
+            let total = pestanas.length() as i64;
+            if total == 0 {
+                return;
+            }
 
-        let mut actual: Option<i64> = None;
-        for indice in 0..total {
-            if let Some(nodo) = pestanas.get(indice as u32) {
-                let es_el_mismo = nodo
-                    .dyn_ref::<web_sys::Node>()
-                    .map(|n| n.is_same_node(Some(target.unchecked_ref())))
-                    .unwrap_or(false);
-                if es_el_mismo {
-                    actual = Some(indice);
-                    break;
+            let mut actual: Option<i64> = None;
+            for indice in 0..total {
+                if let Some(nodo) = pestanas.get(indice as u32) {
+                    let es_el_mismo = nodo
+                        .dyn_ref::<web_sys::Node>()
+                        .map(|n| n.is_same_node(Some(target.unchecked_ref())))
+                        .unwrap_or(false);
+                    if es_el_mismo {
+                        actual = Some(indice);
+                        break;
+                    }
                 }
             }
-        }
-        let Some(actual) = actual else { return };
+            let Some(actual) = actual else { return };
 
-        let destino = match tecla.as_str() {
-            "ArrowRight" => (actual + 1) % total,
-            "ArrowLeft" => (actual + total - 1) % total,
-            "Home" => 0,
-            _ => total - 1,
-        };
+            let destino = match tecla.as_str() {
+                "ArrowRight" => (actual + 1) % total,
+                "ArrowLeft" => (actual + total - 1) % total,
+                "Home" => 0,
+                _ => total - 1,
+            };
 
-        let Some(nodo_destino) = pestanas.get(destino as u32) else {
-            return;
-        };
-        let Ok(elemento_destino) = nodo_destino.dyn_into::<web_sys::Element>() else {
-            return;
-        };
-        let Some(accion) = elemento_destino.get_attribute("data-fg-accion") else {
-            return;
-        };
-        let Some(resto) = accion.strip_prefix("tab:") else {
-            return;
-        };
-        let Some((variable, valor)) = resto.split_once(':') else {
-            return;
-        };
+            let Some(nodo_destino) = pestanas.get(destino as u32) else {
+                return;
+            };
+            let Ok(elemento_destino) = nodo_destino.dyn_into::<web_sys::Element>() else {
+                return;
+            };
+            let Some(accion) = elemento_destino.get_attribute("data-fg-accion") else {
+                return;
+            };
+            let Some(resto) = accion.strip_prefix("tab:") else {
+                return;
+            };
+            let Some((variable, valor)) = resto.split_once(':') else {
+                return;
+            };
 
-        DOM_STATE.with(|celda| {
-            let mut estado_dom = celda.borrow_mut();
-            estado_dom.estado.fijar(variable, valor);
-            estado_dom
-                .almacen
-                .fijar(variable, serde_json::Value::String(valor.to_string()));
+            DOM_STATE.with(|celda| {
+                let mut estado_dom = celda.borrow_mut();
+                estado_dom.estado.fijar(variable, valor);
+                estado_dom
+                    .almacen
+                    .fijar(variable, serde_json::Value::String(valor.to_string()));
+            });
+            actualizar_dom();
+
+            // Se devuelve el foco a la pestaña nueva (el árbol no se recrea, pero
+            // el botón no recibe foco solo con cambiar aria-selected).
+            if let Some(nuevo) = documento.get_element_by_id(&raiz) {
+                if let Ok(Some(boton)) =
+                    nuevo.query_selector(&format!("[data-fg-accion=\"{accion}\"]"))
+                {
+                    if let Some(boton) = boton.dyn_ref::<web_sys::HtmlElement>() {
+                        boton.focus().ok();
+                    }
+                }
+            }
         });
-        actualizar_dom();
-
-        // Se devuelve el foco a la pestaña nueva (el árbol no se recrea, pero
-        // el botón no recibe foco solo con cambiar aria-selected).
-        if let Some(nuevo) = documento.get_element_by_id(&raiz) {
-            if let Ok(Some(boton)) = nuevo.query_selector(&format!("[data-fg-accion=\"{accion}\"]")) {
-                if let Some(boton) = boton.dyn_ref::<web_sys::HtmlElement>() {
-                    boton.focus().ok();
-                }
-            }
-        }
-    });
     let _ =
         elemento.add_event_listener_with_callback("keydown", al_teclear.as_ref().unchecked_ref());
     al_teclear.forget();
+
+    // Envío del formulario (Enter en un campo): se evita la navegación y se
+    // dispara la acción del primer botón, que es lo que haría el usuario.
+    let al_enviar = Closure::<dyn FnMut(web_sys::Event)>::new(move |evento: web_sys::Event| {
+        evento.prevent_default();
+        let Some(target) = evento.target() else {
+            return;
+        };
+        let Ok(formulario) = target.dyn_into::<web_sys::Element>() else {
+            return;
+        };
+        let Ok(Some(boton)) = formulario.query_selector("[data-fg-accion]") else {
+            return;
+        };
+        if let Some(boton) = boton.dyn_ref::<web_sys::HtmlElement>() {
+            boton.click();
+        }
+    });
+    let _ =
+        elemento.add_event_listener_with_callback("submit", al_enviar.as_ref().unchecked_ref());
+    al_enviar.forget();
 }
 
 /// Ordena la tabla del botón clickeado por la columna de su cabecera.
@@ -2465,7 +2540,9 @@ fn ordenar_tabla(boton: &web_sys::Element, columna: &str) {
     let mut indice: Option<u32> = None;
     let mut ascendente = true;
     for i in 0..cabeceras.length() {
-        let Some(nodo) = cabeceras.get(i) else { continue };
+        let Some(nodo) = cabeceras.get(i) else {
+            continue;
+        };
         let Ok(th) = nodo.dyn_into::<web_sys::Element>() else {
             continue;
         };
@@ -2476,7 +2553,14 @@ fn ordenar_tabla(boton: &web_sys::Element, columna: &str) {
         if es_la_columna {
             indice = Some(i);
             ascendente = th.get_attribute("aria-sort").as_deref() != Some("ascending");
-            let _ = th.set_attribute("aria-sort", if ascendente { "ascending" } else { "descending" });
+            let _ = th.set_attribute(
+                "aria-sort",
+                if ascendente {
+                    "ascending"
+                } else {
+                    "descending"
+                },
+            );
         } else {
             let _ = th.set_attribute("aria-sort", "none");
         }
@@ -2507,7 +2591,13 @@ fn ordenar_tabla(boton: &web_sys::Element, columna: &str) {
             .to_lowercase();
         datos.push((texto, fila));
     }
-    datos.sort_by(|a, b| if ascendente { a.0.cmp(&b.0) } else { b.0.cmp(&a.0) });
+    datos.sort_by(|a, b| {
+        if ascendente {
+            a.0.cmp(&b.0)
+        } else {
+            b.0.cmp(&a.0)
+        }
+    });
 
     // Reinsertar en orden: `append_child` mueve los nodos existentes.
     for (_, fila) in datos {
@@ -2577,7 +2667,6 @@ pub fn renderizar_dom(raiz_id: &str, codigo: &str) -> String {
     "ok".to_string()
 }
 
-
 /// Diagnóstico del modo DOM (para depurar en el navegador).
 #[wasm_bindgen]
 pub fn diagnostico_dom() -> String {
@@ -2595,7 +2684,11 @@ pub fn diagnostico_dom() -> String {
             .into_iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect();
-        format!("estado[{}] almacen[{}]", estado.join(","), almacen.join(","))
+        format!(
+            "estado[{}] almacen[{}]",
+            estado.join(","),
+            almacen.join(",")
+        )
     })
 }
 
