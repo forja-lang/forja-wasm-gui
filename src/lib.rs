@@ -173,6 +173,22 @@ pub enum Layout {
         hijos: Vec<Layout>,
         abierto: bool,
     },
+    /// Barra de progreso (accesible).
+    Progreso {
+        valor: f64,
+        maximo: f64,
+        etiqueta: String,
+    },
+    /// Indicador de carga.
+    Cargando {
+        texto: String,
+    },
+    /// Botón sólo icono, con texto accesible en `aria-label`.
+    BotonIcono {
+        icono: String,
+        etiqueta: String,
+        accion: String,
+    },
     /// Formulario: Enter envía; `accion` vacía lo maneja el runtime.
     Formulario {
         accion: String,
@@ -471,6 +487,9 @@ fn renderizar_layout(
         | Layout::Plegable { .. }
         | Layout::Dialogo { .. }
         | Layout::Texto(_)
+        | Layout::Progreso { .. }
+        | Layout::Cargando { .. }
+        | Layout::BotonIcono { .. }
         | Layout::Formulario { .. }
         | Layout::Tabla { .. }
         | Layout::Insignia { .. }
@@ -671,6 +690,9 @@ fn estimar_ancho(layout: &Layout, _default_ancho: f64) -> f64 {
         Layout::Tabla { .. } => _default_ancho,
         Layout::Texto(texto) => (texto.len() as f64 * 8.0).min(200.0),
         Layout::Formulario { .. } => _default_ancho,
+        Layout::Progreso { .. } => _default_ancho,
+        Layout::Cargando { .. } => 120.0,
+        Layout::BotonIcono { .. } => 40.0,
         Layout::Insignia { .. } => 90.0,
         Layout::Aviso { .. } => _default_ancho,
         Layout::Plegable { .. } => _default_ancho,
@@ -914,6 +936,42 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                         etiqueta,
                         por_defecto,
                         opciones,
+                    })
+                }
+                "progreso" | "progress" | "Progreso" => {
+                    let valor = match argumentos.first() {
+                        Some(Expresion::LiteralNumero(n)) => *n as f64,
+                        _ => 0.0,
+                    };
+                    let maximo = match argumentos.get(1) {
+                        Some(Expresion::LiteralNumero(n)) => *n as f64,
+                        _ => 100.0,
+                    };
+                    let etiqueta = match argumentos.get(2) {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    Some(Layout::Progreso {
+                        valor,
+                        maximo,
+                        etiqueta,
+                    })
+                }
+                "cargando" | "spinner" | "Cargando" => {
+                    let texto = match argumentos.first() {
+                        Some(Expresion::LiteralTexto(s)) => s.clone(),
+                        _ => "Cargando".to_string(),
+                    };
+                    Some(Layout::Cargando { texto })
+                }
+                "boton_icono" | "icon_button" | "IconButton" => {
+                    let icono = extraer_texto(argumentos, 0);
+                    let etiqueta = extraer_texto(argumentos, 1);
+                    let accion = extraer_callback(argumentos, 2);
+                    Some(Layout::BotonIcono {
+                        icono,
+                        etiqueta,
+                        accion,
                     })
                 }
                 "formulario" | "form" | "Formulario" => {
@@ -2017,6 +2075,28 @@ fn layout_a_nodos(layout: &Layout) -> Vec<NodoDom> {
                     )
                 })
                 .collect(),
+        }],
+        Layout::Progreso {
+            valor,
+            maximo,
+            etiqueta,
+        } => vec![NodoDom::Progreso {
+            valor: *valor,
+            maximo: *maximo,
+            etiqueta: etiqueta.clone(),
+        }],
+        Layout::Cargando { texto } => vec![NodoDom::Cargando {
+            texto: texto.clone(),
+        }],
+        Layout::BotonIcono {
+            icono,
+            etiqueta,
+            accion,
+        } => vec![NodoDom::BotonIcono {
+            icono: icono.clone(),
+            etiqueta: etiqueta.clone(),
+            accion: accion.clone(),
+            deshabilitado: false,
         }],
         Layout::Formulario {
             accion,
