@@ -562,7 +562,11 @@ fn expr_a_layout(expr: &Expresion) -> Option<Layout> {
                         Some(Expresion::LiteralNumero(n)) => (*n).max(1) as usize,
                         _ => 10,
                     };
-                    let items = argumentos.iter().skip(2).filter_map(expr_a_layout).collect();
+                    let items = argumentos
+                        .iter()
+                        .skip(2)
+                        .filter_map(expr_a_layout)
+                        .collect();
                     Some(Layout::ListaPaginada {
                         variable,
                         por_pagina,
